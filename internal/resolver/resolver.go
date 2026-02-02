@@ -17,6 +17,7 @@ type ResolvedTarget struct {
 	Kind     string
 	URL      string
 	Headers  map[string]string
+	Options  map[string]string
 	Filename string
 	Size     int64
 }

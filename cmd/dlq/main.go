@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"flag"
@@ -60,7 +61,9 @@ func usage() {
 	fmt.Println("DLQ - headless download queue CLI")
 	fmt.Println("")
 	fmt.Println("Usage:")
-	fmt.Println("  dlq add <url> --out /data/downloads [--name optional] [--site mega|webshare]")
+	fmt.Println("  dlq add <url> [<url2> ...] --out /data/downloads [--name optional] [--site mega|webshare]")
+	fmt.Println("  dlq add --file urls.txt --out /data/downloads")
+	fmt.Println("  dlq add --stdin --out /data/downloads")
 	fmt.Println("  dlq status [--watch] [--interval 1] [--status <state>]")
 	fmt.Println("  dlq files")
 	fmt.Println("  dlq logs <job_id> [--tail 50]")
@@ -82,21 +85,21 @@ func apiBase() string {
 }
 
 type jobView struct {
-	ID        int64  `json:"id"`
-	URL       string `json:"url"`
-	Site      string `json:"site"`
-	OutDir    string `json:"out_dir"`
-	Name      string `json:"name"`
-	Status    string `json:"status"`
-	Filename  string `json:"filename"`
-	SizeBytes int64  `json:"size_bytes"`
-	BytesDone int64  `json:"bytes_done"`
-	DownloadSpeed int64 `json:"download_speed"`
-	EtaSeconds    int64 `json:"eta_seconds"`
-	Error     string `json:"error"`
-	ErrorCode string `json:"error_code"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	ID            int64  `json:"id"`
+	URL           string `json:"url"`
+	Site          string `json:"site"`
+	OutDir        string `json:"out_dir"`
+	Name          string `json:"name"`
+	Status        string `json:"status"`
+	Filename      string `json:"filename"`
+	SizeBytes     int64  `json:"size_bytes"`
+	BytesDone     int64  `json:"bytes_done"`
+	DownloadSpeed int64  `json:"download_speed"`
+	EtaSeconds    int64  `json:"eta_seconds"`
+	Error         string `json:"error"`
+	ErrorCode     string `json:"error_code"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
 }
 
 func cmdAdd(args []string) {
@@ -106,34 +109,47 @@ func cmdAdd(args []string) {
 			return
 		}
 	}
-	urlStr, outDir, name, site, maxAttempts, api, err := parseAddArgs(args)
+	urls, outDir, name, site, maxAttempts, api, err := parseAddArgs(args)
 	if err != nil {
 		fmt.Println("error:", err)
-		fmt.Println("usage: dlq add <url> --out /data/downloads [--name optional]")
+		fmt.Println("usage: dlq add <url> [<url2> ...] --out /data/downloads [--name optional]")
 		return
 	}
-	if urlStr == "" || outDir == "" {
-		fmt.Println("usage: dlq add <url> --out /data/downloads [--name optional]")
+	if len(urls) == 0 || outDir == "" {
+		fmt.Println("usage: dlq add <url> [<url2> ...] --out /data/downloads [--name optional]")
 		return
 	}
-	payload := map[string]any{
-		"url":          urlStr,
-		"out_dir":      outDir,
-		"name":         name,
-		"site":         site,
-		"max_attempts": maxAttempts,
-	}
-	var resp map[string]any
-	if err := postJSON(api+"/jobs", payload, &resp); err != nil {
-		fmt.Println("error:", err)
+	if len(urls) > 1 && name != "" {
+		fmt.Println("error: --name can only be used with a single URL")
 		return
 	}
-	fmt.Printf("queued job id %v\n", resp["id"])
+	hadErr := false
+	for _, urlStr := range urls {
+		payload := map[string]any{
+			"url":          urlStr,
+			"out_dir":      outDir,
+			"name":         name,
+			"site":         site,
+			"max_attempts": maxAttempts,
+		}
+		var resp map[string]any
+		if err := postJSON(api+"/jobs", payload, &resp); err != nil {
+			fmt.Printf("error for %s: %v\n", urlStr, err)
+			hadErr = true
+			continue
+		}
+		fmt.Printf("queued job id %v (%s)\n", resp["id"], urlStr)
+	}
+	if hadErr {
+		os.Exit(1)
+	}
 }
 
-func parseAddArgs(args []string) (urlStr, outDir, name, site string, maxAttempts int, api string, err error) {
+func parseAddArgs(args []string) (urls []string, outDir, name, site string, maxAttempts int, api string, err error) {
 	maxAttempts = 5
 	api = apiBase()
+	var files []string
+	useStdin := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if strings.HasPrefix(arg, "--") {
@@ -143,11 +159,14 @@ func parseAddArgs(args []string) (urlStr, outDir, name, site string, maxAttempts
 				parts := strings.SplitN(arg, "=", 2)
 				key = parts[0]
 				val = parts[1]
+			} else if key == "--stdin" {
+				useStdin = true
+				continue
 			} else if i+1 < len(args) {
 				val = args[i+1]
 				i++
 			} else {
-				return "", "", "", "", 0, "", fmt.Errorf("missing value for %s", key)
+				return nil, "", "", "", 0, "", fmt.Errorf("missing value for %s", key)
 			}
 			switch key {
 			case "--out":
@@ -159,23 +178,55 @@ func parseAddArgs(args []string) (urlStr, outDir, name, site string, maxAttempts
 			case "--max-attempts":
 				parsed, convErr := strconv.Atoi(val)
 				if convErr != nil {
-					return "", "", "", "", 0, "", fmt.Errorf("invalid --max-attempts")
+					return nil, "", "", "", 0, "", fmt.Errorf("invalid --max-attempts")
 				}
 				maxAttempts = parsed
 			case "--api":
 				api = val
+			case "--file":
+				files = append(files, val)
 			default:
-				return "", "", "", "", 0, "", fmt.Errorf("unknown flag %s", key)
+				return nil, "", "", "", 0, "", fmt.Errorf("unknown flag %s", key)
 			}
 			continue
 		}
-		if urlStr == "" {
-			urlStr = arg
+		urls = append(urls, arg)
+	}
+	if useStdin {
+		stdinURLs, err := readURLs(os.Stdin)
+		if err != nil {
+			return nil, "", "", "", 0, "", err
+		}
+		urls = append(urls, stdinURLs...)
+	}
+	for _, path := range files {
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, "", "", "", 0, "", err
+		}
+		fileURLs, err := readURLs(f)
+		_ = f.Close()
+		if err != nil {
+			return nil, "", "", "", 0, "", err
+		}
+		urls = append(urls, fileURLs...)
+	}
+	return urls, outDir, name, site, maxAttempts, api, nil
+}
+
+func readURLs(r *os.File) ([]string, error) {
+	var out []string
+	scanner := bufio.NewScanner(r)
+	// Allow for long URLs in batch files.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		return "", "", "", "", 0, "", fmt.Errorf("unexpected argument %s", arg)
+		out = append(out, line)
 	}
-	return urlStr, outDir, name, site, maxAttempts, api, nil
+	return out, scanner.Err()
 }
 
 func cmdStatus(args []string) {

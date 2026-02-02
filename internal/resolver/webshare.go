@@ -54,21 +54,25 @@ func (r *webshareResolver) Resolve(ctx context.Context, rawURL string) (*Resolve
 		return nil, err
 	}
 	return &ResolvedTarget{
-		Kind:     "aria2",
-		URL:      link,
+		Kind: "aria2",
+		URL:  link,
+		Options: map[string]string{
+			"max-connection-per-server": "1",
+			"split":                     "1",
+		},
 		Filename: info.Filename,
 		Size:     info.Size,
 	}, nil
 }
 
 type wsInfoResponse struct {
-	Status   string `xml:"status"`
-	Name     string `xml:"name"`
-	Size     string `xml:"size"`
-	Message  string `xml:"message"`
-	Code     string `xml:"code"`
-	Removed  string `xml:"removed"`
-	Password string `xml:"password"`
+	Status    string `xml:"status"`
+	Name      string `xml:"name"`
+	Size      string `xml:"size"`
+	Message   string `xml:"message"`
+	Code      string `xml:"code"`
+	Removed   string `xml:"removed"`
+	Password  string `xml:"password"`
 	Available string `xml:"available"`
 }
 

@@ -19,30 +19,30 @@ const (
 )
 
 type Job struct {
-	ID          int64
-	URL         string
-	Site        string
-	OutDir      string
-	Name        string
-	ResolvedURL sql.NullString
-	Filename    sql.NullString
-	SizeBytes   sql.NullInt64
-	BytesDone   int64
+	ID            int64
+	URL           string
+	Site          string
+	OutDir        string
+	Name          string
+	ResolvedURL   sql.NullString
+	Filename      sql.NullString
+	SizeBytes     sql.NullInt64
+	BytesDone     int64
 	DownloadSpeed sql.NullInt64
 	EtaSeconds    sql.NullInt64
-	Status      string
-	Error       sql.NullString
-	ErrorCode   sql.NullString
-	Engine      string
-	EngineGID   sql.NullString
-	Attempts    int
-	MaxAttempts int
-	NextRetryAt sql.NullString
-	CreatedAt   string
-	UpdatedAt   string
-	StartedAt   sql.NullString
-	CompletedAt sql.NullString
-	DeletedAt   sql.NullString
+	Status        string
+	Error         sql.NullString
+	ErrorCode     sql.NullString
+	Engine        string
+	EngineGID     sql.NullString
+	Attempts      int
+	MaxAttempts   int
+	NextRetryAt   sql.NullString
+	CreatedAt     string
+	UpdatedAt     string
+	StartedAt     sql.NullString
+	CompletedAt   sql.NullString
+	DeletedAt     sql.NullString
 }
 
 // Store wraps DB access for jobs and events.
@@ -273,7 +273,22 @@ WHERE id = ?
 func (s *Store) Requeue(ctx context.Context, id int64) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx, `
-UPDATE jobs SET status = ?, error = NULL, error_code = NULL, next_retry_at = NULL, deleted_at = NULL, updated_at = ?
+UPDATE jobs
+SET status = ?,
+    error = NULL,
+    error_code = NULL,
+    next_retry_at = NULL,
+    deleted_at = NULL,
+    resolved_url = NULL,
+    filename = NULL,
+    size_bytes = NULL,
+    download_speed = 0,
+    eta_seconds = NULL,
+    engine = 'aria2',
+    engine_gid = NULL,
+    started_at = NULL,
+    completed_at = NULL,
+    updated_at = ?
 WHERE id = ?
 `, StatusQueued, now, id)
 	return err

@@ -67,16 +67,16 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, errors.New("missing url or out_dir"))
 			return
 		}
-			id, err := s.Queue.CreateJob(r.Context(), req.URL, req.OutDir, req.Name, req.Site, req.MaxAttempts)
-			if err != nil {
-				writeErr(w, http.StatusInternalServerError, err)
-				return
-			}
-			log.Printf("action=add id=%d url=%q out=%q name=%q site=%q max_attempts=%d", id, req.URL, req.OutDir, req.Name, req.Site, req.MaxAttempts)
-			writeJSON(w, http.StatusOK, map[string]any{"id": id})
-		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
+		id, err := s.Queue.CreateJob(r.Context(), req.URL, req.OutDir, req.Name, req.Site, req.MaxAttempts)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
 		}
+		log.Printf("action=add id=%d url=%q out=%q name=%q site=%q max_attempts=%d", id, req.URL, req.OutDir, req.Name, req.Site, req.MaxAttempts)
+		writeJSON(w, http.StatusOK, map[string]any{"id": id})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
 }
 
 func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
@@ -118,53 +118,53 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, events)
-		case "retry":
-			if r.Method != http.MethodPost {
-				w.WriteHeader(http.StatusMethodNotAllowed)
-				return
-			}
-			if err := s.Queue.Retry(r.Context(), id); err != nil {
-				writeErr(w, http.StatusInternalServerError, err)
-				return
-			}
-			log.Printf("action=retry id=%d", id)
-			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-		case "remove":
-			if r.Method != http.MethodPost {
-				w.WriteHeader(http.StatusMethodNotAllowed)
-				return
-			}
-			if err := s.Queue.Remove(r.Context(), id); err != nil {
-				writeErr(w, http.StatusInternalServerError, err)
-				return
-			}
-			log.Printf("action=remove id=%d", id)
-			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-		case "pause":
-			if r.Method != http.MethodPost {
-				w.WriteHeader(http.StatusMethodNotAllowed)
-				return
-			}
-			if err := s.Queue.Pause(r.Context(), id); err != nil {
-				writeErr(w, http.StatusInternalServerError, err)
-				return
-			}
-			log.Printf("action=pause id=%d", id)
-			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-		case "resume":
-			if r.Method != http.MethodPost {
-				w.WriteHeader(http.StatusMethodNotAllowed)
-				return
-			}
-			if err := s.Queue.Resume(r.Context(), id); err != nil {
-				writeErr(w, http.StatusInternalServerError, err)
-				return
-			}
-			log.Printf("action=resume id=%d", id)
-			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-		default:
-			w.WriteHeader(http.StatusNotFound)
+	case "retry":
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
 		}
+		if err := s.Queue.Retry(r.Context(), id); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		log.Printf("action=retry id=%d", id)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	case "remove":
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if err := s.Queue.Remove(r.Context(), id); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		log.Printf("action=remove id=%d", id)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	case "pause":
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if err := s.Queue.Pause(r.Context(), id); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		log.Printf("action=pause id=%d", id)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	case "resume":
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if err := s.Queue.Resume(r.Context(), id); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		log.Printf("action=resume id=%d", id)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	default:
+		w.WriteHeader(http.StatusNotFound)
+	}
 }
 
 func (s *Server) handleJobsClear(w http.ResponseWriter, r *http.Request) {

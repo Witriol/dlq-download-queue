@@ -6,16 +6,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/Witriol/my-downloader/internal/downloader"
 )
 
 type Service struct {
 	store      *Store
-	downloader *downloader.Aria2Client
+	downloader Downloader
 }
 
-func NewService(store *Store, dl *downloader.Aria2Client) *Service {
+func NewService(store *Store, dl Downloader) *Service {
 	return &Service{store: store, downloader: dl}
 }
 
@@ -70,6 +68,13 @@ func (s *Service) ListEvents(ctx context.Context, id int64, limit int) ([]string
 }
 
 func (s *Service) Retry(ctx context.Context, id int64) error {
+	job, err := s.store.GetJob(ctx, id)
+	if err != nil {
+		return err
+	}
+	if job.EngineGID.Valid && s.downloader != nil {
+		_ = s.downloader.Remove(ctx, job.EngineGID.String)
+	}
 	if err := s.store.Requeue(ctx, id); err != nil {
 		return err
 	}
@@ -123,9 +128,19 @@ func (s *Service) Resume(ctx context.Context, id int64) error {
 		return err
 	}
 	if !job.EngineGID.Valid {
-		return errors.New("missing_engine_gid")
+		if err := s.store.Requeue(ctx, id); err != nil {
+			return err
+		}
+		return s.store.AddEvent(ctx, id, "info", "resume requeued")
 	}
 	if err := s.downloader.Unpause(ctx, job.EngineGID.String); err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "not found") || strings.Contains(msg, "status") {
+			if err := s.store.Requeue(ctx, id); err != nil {
+				return err
+			}
+			return s.store.AddEvent(ctx, id, "info", "resume requeued")
+		}
 		return err
 	}
 	if err := s.store.MarkDownloadingStatus(ctx, id); err != nil {
@@ -136,21 +151,21 @@ func (s *Service) Resume(ctx context.Context, id int64) error {
 
 // JobView is a light view for API/CLI.
 type JobView struct {
-	ID        int64  `json:"id"`
-	URL       string `json:"url"`
-	Site      string `json:"site"`
-	OutDir    string `json:"out_dir"`
-	Name      string `json:"name"`
-	Status    string `json:"status"`
-	Filename  string `json:"filename,omitempty"`
-	SizeBytes int64  `json:"size_bytes,omitempty"`
-	BytesDone int64  `json:"bytes_done"`
-	DownloadSpeed int64 `json:"download_speed"`
-	EtaSeconds    int64 `json:"eta_seconds"`
-	Error     string `json:"error,omitempty"`
-	ErrorCode string `json:"error_code,omitempty"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	ID            int64  `json:"id"`
+	URL           string `json:"url"`
+	Site          string `json:"site"`
+	OutDir        string `json:"out_dir"`
+	Name          string `json:"name"`
+	Status        string `json:"status"`
+	Filename      string `json:"filename,omitempty"`
+	SizeBytes     int64  `json:"size_bytes,omitempty"`
+	BytesDone     int64  `json:"bytes_done"`
+	DownloadSpeed int64  `json:"download_speed"`
+	EtaSeconds    int64  `json:"eta_seconds"`
+	Error         string `json:"error,omitempty"`
+	ErrorCode     string `json:"error_code,omitempty"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
 }
 
 func toView(j Job) JobView {

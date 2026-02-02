@@ -11,7 +11,6 @@ docker run -d --name dlq \
   -v /mnt/user/downloads:/data \
   -v /mnt/user/appdata/dlq:/state \
   -e DLQ_CONCURRENCY=2 \
-  -p 8080:8080 \
   dlq:local
 ```
 
@@ -27,9 +26,13 @@ Check status:
 docker exec -it dlq dlq status
 ```
 
+To access the HTTP API from the host, add `-p 8080:8080` and set `-e DLQ_HTTP_ADDR=0.0.0.0:8080`.
+
 ## CLI
 
-- `dlq add <url> --out /data/downloads [--name optional] [--site mega|webshare]`
+- `dlq add <url> [<url2> ...] --out /data/downloads [--name optional] [--site mega|webshare]`
+- `dlq add --file urls.txt --out /data/downloads`
+- `dlq add --stdin --out /data/downloads`
 - `dlq status` (summary + table)
 - `dlq status --watch [--interval 1] [--status queued|resolving|downloading|paused|completed|failed|deleted]`
 - `dlq files` (shows all jobs in DB, including soft-deleted)
@@ -52,20 +55,25 @@ docker exec -it dlq dlq status
 
 - `DLQ_STATE_DIR` (default `/state`)
 - `DLQ_DB` (default `/state/dlq.db`)
-- `DLQ_HTTP_ADDR` (default `0.0.0.0:8080`)
+- `DLQ_HTTP_ADDR` (default `127.0.0.1:8080`)
 - `DLQ_CONCURRENCY` (default `2`)
+- `PUID` / `PGID` (optional; if set, dlqd + aria2 run as that user)
 - `ARIA2_RPC` (default `http://127.0.0.1:6800/jsonrpc`)
 - `ARIA2_SECRET` (optional; recommended)
 - `ARIA2_DISABLE=1` (disable built-in aria2c process in the container)
 - `ARIA2_EXTRA_OPTS` (optional extra aria2c flags)
 - `ARIA2_SUMMARY_INTERVAL` (default `0`, set >0 to enable aria2 summary output)
 - `ARIA2_CONSOLE_LOG_LEVEL` (default `warn`)
+- aria2 console readout is disabled by default; set `ARIA2_EXTRA_OPTS=--show-console-readout=true` to re-enable.
 
 ## Notes
 
-- Webshare resolver uses the public API in anonymous mode when possible.
+- Webshare resolver uses the public API in anonymous mode when possible and forces single-connection downloads for reliability.
 - MEGA resolver is a stub; plug in MEGAcmd or a SDK-based resolver later.
 - Credentials should be provided via env vars or secrets; never log them.
+- If aria2 restarts, `dlq resume <id>` will re-queue the job and re-resolve the URL.
+- If you set `PUID`/`PGID`, ensure `/data` and `/state` are writable by that user on the host.
+- If you see `attempt to write a readonly database`, fix permissions on the host (e.g., `chown -R 99:100 /mnt/user/appdata/dlq`).
 
 ## Unraid
 
@@ -79,13 +87,10 @@ scripts/deploy-unraid.sh
 
 Environment overrides (optional):
 
-- `SSH_HOST` (default `HOMENAS`)
+- `REMOTE_HOST` (default `HOMENAS`)
 - `VERSION_FILE` (default `VERSION`)
 - `IMAGE_REPO` (default `dlq`)
-- `IMAGE_TAG` (default value from `VERSION`)
-- `IMAGE_NAME` (override full image name, e.g. `dlq:0.1.0`)
-- `LATEST_TAG` (default `latest`)
-- `PLATFORM` (default `linux/amd64`)
+- `REMOTE_TAR` (default `/tmp/dlq.tar.gz`)
 - `CONTAINER_NAME` (default `dlq`)
 - `TEMPLATE_TPL` (default `templates/unraid-dlq.tpl.xml`)
 - `REMOTE_TEMPLATE` (default `/boot/config/plugins/dockerMan/templates-user/my-downloader-queue.xml`)
@@ -104,6 +109,22 @@ Environment overrides (optional):
 ```
 dlq --version
 ```
+
+## Testing
+
+```
+go test ./internal/queue
+```
+
+## Development
+
+```
+scripts/run-dev.sh
+```
+
+## License
+
+MIT. See `LICENSE`. Third-party notices in `THIRD_PARTY_NOTICES.md`.
 
 ## Remote CLI shortcut
 

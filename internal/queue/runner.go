@@ -9,14 +9,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Witriol/my-downloader/internal/downloader"
 	"github.com/Witriol/my-downloader/internal/resolver"
 )
 
 type Runner struct {
 	Store       *Store
 	Resolvers   *resolver.Registry
-	Downloader  *downloader.Aria2Client
+	Downloader  Downloader
 	Concurrency int
 	PollEvery   time.Duration
 }
@@ -90,6 +89,26 @@ func (r *Runner) resolveAndStart(ctx context.Context, job *Job) error {
 		options["out"] = job.Name
 	} else if res.Filename != "" {
 		options["out"] = res.Filename
+	}
+	for k, v := range res.Options {
+		if v == "" {
+			continue
+		}
+		options[k] = v
+	}
+	if len(res.Headers) > 0 {
+		var b strings.Builder
+		first := true
+		for k, v := range res.Headers {
+			if !first {
+				b.WriteString("\n")
+			}
+			first = false
+			b.WriteString(k)
+			b.WriteString(": ")
+			b.WriteString(v)
+		}
+		options["header"] = b.String()
 	}
 	gid, err := r.Downloader.AddURI(ctx, res.URL, options)
 	if err != nil {
