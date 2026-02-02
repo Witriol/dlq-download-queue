@@ -24,6 +24,7 @@ MOVIES_PATH="${MOVIES_PATH:-/mnt/user/movies}"
 STATE_PATH="${STATE_PATH:-/mnt/user/appdata/dlq}"
 HTTP_ADDR="${HTTP_ADDR:-127.0.0.1:8080}"
 DLQ_CONCURRENCY="${DLQ_CONCURRENCY:-2}"
+DLQ_OUT_DIR_PRESETS="${DLQ_OUT_DIR_PRESETS:-/data/tvshows,/data/movies}"
 PUID="${PUID:-99}"
 PGID="${PGID:-100}"
 TZ="${TZ:-UTC}"
@@ -95,6 +96,7 @@ sed \
   -e "s|@STATE_PATH@|${STATE_ESC}|g" \
   -e "s|@HTTP_ADDR@|${HTTP_ADDR}|g" \
   -e "s|@DLQ_CONCURRENCY@|${DLQ_CONCURRENCY}|g" \
+  -e "s|@DLQ_OUT_DIR_PRESETS@|$(escape_sed "${DLQ_OUT_DIR_PRESETS}")|g" \
   -e "s|@PUID@|${PUID}|g" \
   -e "s|@PGID@|${PGID}|g" \
   -e "s|@TZ@|${TZ}|g" \
@@ -127,6 +129,7 @@ if [[ "${DEPLOY}" == "true" ]]; then
     -v ${STATE_PATH}:/state \
     -e DLQ_HTTP_ADDR=${HTTP_ADDR} \
     -e DLQ_CONCURRENCY=${DLQ_CONCURRENCY} \
+    -e DLQ_OUT_DIR_PRESETS=${DLQ_OUT_DIR_PRESETS} \
     -e PUID=${PUID} \
     -e PGID=${PGID} \
     -e TZ=${TZ} \

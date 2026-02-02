@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Witriol/my-downloader/internal/api"
@@ -24,6 +25,7 @@ func main() {
 	aria2RPC := getenv("ARIA2_RPC", "http://127.0.0.1:6800/jsonrpc")
 	aria2Secret := getenv("ARIA2_SECRET", "")
 	concurrency := getenvInt("DLQ_CONCURRENCY", 2)
+	outDirPresets := splitCSV(getenvOptional("DLQ_OUT_DIR_PRESETS", "/data/tvshows,/data/movies"))
 
 	dbConn, err := db.Open(dbPath)
 	if err != nil {
@@ -50,7 +52,10 @@ func main() {
 	defer cancel()
 	go runner.Start(ctx)
 
-	server := &api.Server{Queue: service}
+	server := &api.Server{
+		Queue: service,
+		Meta:  &api.Meta{OutDirPresets: outDirPresets},
+	}
 	ln, err := net.Listen("tcp", listen)
 	if err != nil {
 		log.Fatalf("listen: %v", err)
@@ -75,6 +80,13 @@ func getenv(key, def string) string {
 	return def
 }
 
+func getenvOptional(key, def string) string {
+	if v, ok := os.LookupEnv(key); ok {
+		return v
+	}
+	return def
+}
+
 func getenvInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		if parsed, err := strconv.Atoi(v); err == nil {
@@ -82,4 +94,20 @@ func getenvInt(key string, def int) int {
 		}
 	}
 	return def
+}
+
+func splitCSV(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		p := strings.TrimSpace(part)
+		if p == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }

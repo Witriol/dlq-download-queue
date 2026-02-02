@@ -27,4 +27,5 @@
 
   <Config Name="ARIA2 Secret" Target="ARIA2_SECRET" Default="" Mode="" Description="RPC secret for aria2" Type="Variable" Display="advanced" Required="false" Mask="true"/>
   <Config Name="DLQ Concurrency" Target="DLQ_CONCURRENCY" Default="2" Mode="" Description="Number of concurrent downloads" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="DLQ Out Dir Presets" Target="DLQ_OUT_DIR_PRESETS" Default="/data/tvshows,/data/movies" Mode="" Description="Comma-separated out_dir presets for the UI" Type="Variable" Display="advanced" Required="false" Mask="false"/>
 </Container>

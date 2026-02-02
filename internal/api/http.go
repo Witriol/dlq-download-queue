@@ -28,14 +28,32 @@ type JobView = queue.JobView
 
 type Server struct {
 	Queue Queue
+	Meta  *Meta
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/meta", s.handleMeta)
 	mux.HandleFunc("/jobs", s.handleJobs)
 	mux.HandleFunc("/jobs/clear", s.handleJobsClear)
 	mux.HandleFunc("/jobs/", s.handleJob)
 	return mux
+}
+
+type Meta struct {
+	OutDirPresets []string `json:"out_dir_presets"`
+}
+
+func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	meta := s.Meta
+	if meta == nil {
+		meta = &Meta{}
+	}
+	writeJSON(w, http.StatusOK, meta)
 }
 
 type addJobRequest struct {

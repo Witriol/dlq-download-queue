@@ -44,6 +44,18 @@ To access the HTTP API from the host, add `-p 8080:8080` and set `-e DLQ_HTTP_AD
 - `dlq clear` (hard delete + reset IDs)
 - `dlq help`
 
+## UI (SvelteKit)
+
+The UI is optional and lives under `ui/`. It proxies the DLQ HTTP API server-side.
+
+```
+cd ui
+npm install
+DLQ_API=http://127.0.0.1:8080 npm run dev
+```
+
+Presets for out_dir are served from `GET /meta` and configured via `DLQ_OUT_DIR_PRESETS`.
+
 ## How it works
 
 - `dlqd` daemon stores jobs in SQLite, resolves URLs, and starts downloads in aria2 via JSON-RPC.
@@ -57,6 +69,7 @@ To access the HTTP API from the host, add `-p 8080:8080` and set `-e DLQ_HTTP_AD
 - `DLQ_DB` (default `/state/dlq.db`)
 - `DLQ_HTTP_ADDR` (default `127.0.0.1:8080`)
 - `DLQ_CONCURRENCY` (default `2`)
+- `DLQ_OUT_DIR_PRESETS` (default `/data/tvshows,/data/movies`) - comma-separated list for UI presets via `/meta`
 - `PUID` / `PGID` (optional; if set, dlqd + aria2 run as that user)
 - `ARIA2_RPC` (default `http://127.0.0.1:6800/jsonrpc`)
 - `ARIA2_SECRET` (optional; recommended)
@@ -131,7 +144,13 @@ MIT. See `LICENSE`. Third-party notices in `THIRD_PARTY_NOTICES.md`.
 Add this to your `~/.zshrc` (or `~/.bashrc`) to run the CLI on Unraid via SSH:
 
 ```
-dlq() { ssh -t HOMENAS "docker exec -it dlq dlq $(printf '%q ' "$@")"; }
+dlq() {
+  if [ -t 0 ]; then
+    ssh -t HOMENAS "docker exec -it dlq dlq $(printf '%q ' "$@")"
+  else
+    ssh HOMENAS "docker exec -i dlq dlq $(printf '%q ' "$@")"
+  fi
+}
 ```
 
 Then:
