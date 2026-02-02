@@ -1,0 +1,7 @@
+.git
+.gitignore
+scripts/
+templates/
+README.md
+VERSION
+*.xml

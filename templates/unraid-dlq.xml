@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Container version="2">
+  <Name>My Downloader Queue</Name>
+  <Repository>dlq:0.1.0</Repository>
+  <Registry></Registry>
+  <Network>bridge</Network>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/Witriol/my-downloader/issues</Support>
+  <Project>https://github.com/Witriol/my-downloader</Project>
+  <Overview>Headless download-queue daemon + CLI (aria2-backed). Default: anonymous mode; login-required/quota/captcha become backoff states. CLI via docker exec. Use /data/tvshows or /data/movies as --out targets. HTTP API is bound to localhost.</Overview>
+  <Category>Downloaders:Tools</Category>
+  <WebUI/>
+  <TemplateURL/>
+  <Icon/>
+  <ExtraParams/>
+  <PostArgs/>
+
+  <Config Name="TV Shows" Target="/data/tvshows" Default="/mnt/user/tvshows" Mode="rw" Description="TV shows output directory" Type="Path" Display="always" Required="true" Mask="false"/>
+  <Config Name="Movies" Target="/data/movies" Default="/mnt/user/movies" Mode="rw" Description="Movies output directory" Type="Path" Display="always" Required="true" Mask="false"/>
+  <Config Name="State" Target="/state" Default="/mnt/user/appdata/dlq" Mode="rw" Description="SQLite DB + logs + runtime" Type="Path" Display="always" Required="true" Mask="false"/>
+
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="Run as user id" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Run as group id" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <Config Name="TZ" Target="TZ" Default="UTC" Mode="" Description="Timezone" Type="Variable" Display="advanced" Required="false" Mask="false">UTC</Config>
+
+  <Config Name="HTTP API (internal)" Target="DLQ_HTTP_ADDR" Default="127.0.0.1:8080" Mode="" Description="Bind address for internal API (not exposed)" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+
+  <Config Name="ARIA2 Secret" Target="ARIA2_SECRET" Default="" Mode="" Description="RPC secret for aria2" Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="DLQ Concurrency" Target="DLQ_CONCURRENCY" Default="2" Mode="" Description="Number of concurrent downloads" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+</Container>
