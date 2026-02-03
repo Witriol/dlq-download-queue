@@ -3,7 +3,6 @@ package queue
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -21,18 +20,22 @@ func (s *Service) CreateJob(ctx context.Context, url, outDir, name, site string,
 	if maxAttempts <= 0 {
 		maxAttempts = 5
 	}
-	cleanOut := filepath.Clean(outDir)
-	if strings.Contains(cleanOut, "..") {
-		return 0, errors.New("invalid out_dir")
+	cleanOut, err := cleanOutDir(outDir)
+	if err != nil {
+		return 0, err
 	}
-	job := &Job{URL: url, OutDir: cleanOut, Name: name, Site: site, MaxAttempts: maxAttempts}
+	cleanName, err := cleanUserFilename(name)
+	if err != nil {
+		return 0, err
+	}
+	job := &Job{URL: url, OutDir: cleanOut, Name: cleanName, Site: site, MaxAttempts: maxAttempts}
 	id, err := s.store.CreateJob(ctx, job)
 	if err != nil {
 		return 0, err
 	}
 	msg := "added url=" + url + " out=" + cleanOut
-	if name != "" {
-		msg += " name=" + name
+	if cleanName != "" {
+		msg += " name=" + cleanName
 	}
 	if site != "" {
 		msg += " site=" + site

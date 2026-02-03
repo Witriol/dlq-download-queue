@@ -34,11 +34,18 @@ func main() {
 	store := queue.NewStore(dbConn)
 	service := queue.NewService(store, downloader.NewAria2Client(aria2RPC, aria2Secret))
 
+	webshareResolver := resolver.NewWebshareResolver()
+	megaResolver := resolver.NewMegaResolver()
+	httpResolver := resolver.NewHTTPResolver()
 	resRegistry := resolver.NewRegistry(
-		resolver.NewWebshareResolver(),
-		resolver.NewMegaResolver(),
-		resolver.NewHTTPResolver(),
+		webshareResolver,
+		megaResolver,
+		httpResolver,
 	)
+	resRegistry.RegisterSite("webshare", webshareResolver)
+	resRegistry.RegisterSite("mega", megaResolver)
+	resRegistry.RegisterSite("http", httpResolver)
+	resRegistry.RegisterSite("https", httpResolver)
 
 	runner := &queue.Runner{
 		Store:       store,
@@ -61,7 +68,15 @@ func main() {
 		log.Fatalf("listen: %v", err)
 	}
 	log.Printf("dlqd listening on %s", listen)
-	if err := http.Serve(ln, server.Handler()); err != nil {
+	httpServer := &http.Server{
+		Handler:           server.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+	if err := httpServer.Serve(ln); err != nil {
 		log.Fatalf("http serve: %v", err)
 	}
 }

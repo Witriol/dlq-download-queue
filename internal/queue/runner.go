@@ -44,6 +44,9 @@ func (r *Runner) tick(ctx context.Context) {
 	if err := r.updateActive(ctx); err != nil {
 		log.Printf("runner updateActive error: %v", err)
 	}
+	if err := r.requeueFailed(ctx); err != nil {
+		log.Printf("runner requeueFailed error: %v", err)
+	}
 	// Start new jobs if capacity.
 	active := r.countDownloading(ctx)
 	for active < r.Concurrency {
@@ -67,13 +70,14 @@ func (r *Runner) resolveAndStart(ctx context.Context, job *Job) error {
 	if err == nil && latest.DeletedAt.Valid {
 		return r.Store.AddEvent(ctx, job.ID, "info", "skipped deleted job")
 	}
-	res, err := r.Resolvers.Resolve(ctx, job.URL)
+	res, err := r.Resolvers.ResolveWithSite(ctx, job.Site, job.URL)
 	if err != nil {
 		code, msg, retryAt := mapResolverError(err)
 		_ = r.Store.AddEvent(ctx, job.ID, "error", msg)
 		return r.Store.MarkFailed(ctx, job.ID, code, msg, retryAt)
 	}
-	if err := r.Store.UpdateResolving(ctx, job.ID, res.URL, res.Filename, res.Size); err != nil {
+	filename := sanitizeFilename(res.Filename)
+	if err := r.Store.UpdateResolving(ctx, job.ID, res.URL, filename, res.Size); err != nil {
 		return err
 	}
 	if res.Kind != "aria2" {
@@ -85,10 +89,10 @@ func (r *Runner) resolveAndStart(ctx context.Context, job *Job) error {
 	options := map[string]string{
 		"dir": job.OutDir,
 	}
-	if job.Name != "" {
-		options["out"] = job.Name
-	} else if res.Filename != "" {
-		options["out"] = res.Filename
+	if name := sanitizeFilename(job.Name); name != "" {
+		options["out"] = name
+	} else if filename != "" {
+		options["out"] = filename
 	}
 	for k, v := range res.Options {
 		if v == "" {
@@ -117,6 +121,21 @@ func (r *Runner) resolveAndStart(ctx context.Context, job *Job) error {
 	}
 	_ = r.Store.AddEvent(ctx, job.ID, "info", "download started")
 	return r.Store.MarkDownloading(ctx, job.ID, "aria2", gid)
+}
+
+func (r *Runner) requeueFailed(ctx context.Context) error {
+	ids, err := r.Store.ListRetryableFailed(ctx, 0)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := r.Store.Requeue(ctx, id); err != nil {
+			_ = r.Store.AddEvent(ctx, id, "error", "auto requeue failed: "+err.Error())
+			continue
+		}
+		_ = r.Store.AddEvent(ctx, id, "info", "auto retry queued")
+	}
+	return nil
 }
 
 func (r *Runner) updateActive(ctx context.Context) error {
@@ -183,6 +202,8 @@ func mapResolverError(err error) (code, msg string, retryAt time.Time) {
 		return "captcha_needed", "captcha required; cannot proceed in headless mode", time.Now().UTC().Add(24 * time.Hour)
 	case errors.Is(err, resolver.ErrTemporarilyOff):
 		return "temporarily_unavailable", "temporarily unavailable; retry later", time.Now().UTC().Add(30 * time.Minute)
+	case errors.Is(err, resolver.ErrUnknownSite):
+		return "unknown_site", "unknown site; cannot resolve", time.Now().UTC().Add(6 * time.Hour)
 	default:
 		return "resolve_failed", err.Error(), time.Now().UTC().Add(30 * time.Minute)
 	}

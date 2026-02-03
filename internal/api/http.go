@@ -12,6 +12,8 @@ import (
 	"github.com/Witriol/my-downloader/internal/queue"
 )
 
+const maxRequestBodyBytes = 1 << 20
+
 type Queue interface {
 	CreateJob(ctx context.Context, url, outDir, name, site string, maxAttempts int) (int64, error)
 	ListJobs(ctx context.Context, status string, includeDeleted bool) ([]JobView, error)
@@ -37,7 +39,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/jobs", s.handleJobs)
 	mux.HandleFunc("/jobs/clear", s.handleJobsClear)
 	mux.HandleFunc("/jobs/", s.handleJob)
-	return mux
+	return withRequestLimit(mux, maxRequestBodyBytes)
 }
 
 type Meta struct {
@@ -78,6 +80,11 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		var req addJobRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				writeErr(w, http.StatusRequestEntityTooLarge, errors.New("request body too large"))
+				return
+			}
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
@@ -206,4 +213,13 @@ func writeJSON(w http.ResponseWriter, code int, v interface{}) {
 
 func writeErr(w http.ResponseWriter, code int, err error) {
 	writeJSON(w, code, map[string]string{"error": err.Error()})
+}
+
+func withRequestLimit(next http.Handler, limit int64) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
+		}
+		next.ServeHTTP(w, r)
+	})
 }

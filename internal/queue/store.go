@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -157,16 +158,44 @@ func (s *Store) ListEvents(ctx context.Context, jobID int64, limit int) ([]strin
 	return out, rows.Err()
 }
 
-// ClaimNextQueued finds a queued job ready to run and marks it as resolving.
-func (s *Store) ClaimNextQueued(ctx context.Context) (*Job, error) {
+func (s *Store) ListRetryableFailed(ctx context.Context, limit int) ([]int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
-	// Use a transaction for a simple claim.
-	tx, err := s.db.BeginTx(ctx, nil)
+	query := `
+SELECT id
+FROM jobs
+WHERE status = ? AND deleted_at IS NULL AND next_retry_at IS NOT NULL AND next_retry_at <= ? AND attempts < max_attempts
+ORDER BY next_retry_at ASC`
+	args := []any{StatusFailed, now}
+	if limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
-	row := tx.QueryRowContext(ctx, `
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// ClaimNextQueued finds a queued job ready to run and marks it as resolving.
+func (s *Store) ClaimNextQueued(ctx context.Context) (*Job, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	for {
+		// Use a transaction for a simple claim.
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		row := tx.QueryRowContext(ctx, `
 SELECT id, url, site, out_dir, name, resolved_url, filename, size_bytes, bytes_done, status, error, error_code,
        download_speed, eta_seconds, engine, engine_gid, attempts, max_attempts, next_retry_at, created_at, updated_at, started_at, completed_at, deleted_at
 FROM jobs
@@ -174,28 +203,40 @@ WHERE status = ? AND deleted_at IS NULL AND (next_retry_at IS NULL OR next_retry
 ORDER BY id ASC
 LIMIT 1
 `, StatusQueued, now)
-	var j Job
-	if err := row.Scan(
-		&j.ID, &j.URL, &j.Site, &j.OutDir, &j.Name, &j.ResolvedURL, &j.Filename, &j.SizeBytes, &j.BytesDone,
-		&j.Status, &j.Error, &j.ErrorCode, &j.DownloadSpeed, &j.EtaSeconds, &j.Engine, &j.EngineGID, &j.Attempts, &j.MaxAttempts,
-		&j.NextRetryAt, &j.CreatedAt, &j.UpdatedAt, &j.StartedAt, &j.CompletedAt, &j.DeletedAt,
-	); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, sql.ErrNoRows
+		var j Job
+		if err := row.Scan(
+			&j.ID, &j.URL, &j.Site, &j.OutDir, &j.Name, &j.ResolvedURL, &j.Filename, &j.SizeBytes, &j.BytesDone,
+			&j.Status, &j.Error, &j.ErrorCode, &j.DownloadSpeed, &j.EtaSeconds, &j.Engine, &j.EngineGID, &j.Attempts, &j.MaxAttempts,
+			&j.NextRetryAt, &j.CreatedAt, &j.UpdatedAt, &j.StartedAt, &j.CompletedAt, &j.DeletedAt,
+		); err != nil {
+			_ = tx.Rollback()
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, sql.ErrNoRows
+			}
+			return nil, err
 		}
-		return nil, err
+		res, err := tx.ExecContext(ctx, `
+UPDATE jobs SET status = ?, updated_at = ?, started_at = ? WHERE id = ? AND status = ?
+`, StatusResolving, now, now, j.ID, StatusQueued)
+		if err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
+		if affected == 0 {
+			_ = tx.Rollback()
+			continue
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		j.Status = StatusResolving
+		return &j, nil
 	}
-	_, err = tx.ExecContext(ctx, `
-UPDATE jobs SET status = ?, updated_at = ?, started_at = ? WHERE id = ?
-`, StatusResolving, now, now, j.ID)
-	if err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	j.Status = StatusResolving
-	return &j, nil
 }
 
 func (s *Store) UpdateResolving(ctx context.Context, id int64, resolvedURL, filename string, sizeBytes int64) error {
@@ -267,7 +308,22 @@ UPDATE jobs
 SET status = ?, error = ?, error_code = ?, download_speed = 0, eta_seconds = NULL, updated_at = ?, next_retry_at = ?, attempts = attempts + 1
 WHERE id = ?
 `, StatusFailed, msg, code, now, retryStr, id)
-	return err
+	if err != nil {
+		return err
+	}
+	var attempts, maxAttempts int
+	row := s.db.QueryRowContext(ctx, `SELECT attempts, max_attempts FROM jobs WHERE id = ?`, id)
+	if err := row.Scan(&attempts, &maxAttempts); err != nil {
+		return err
+	}
+	if maxAttempts > 0 && attempts >= maxAttempts {
+		eventMsg := fmt.Sprintf("max attempts reached (%d); no further retries", maxAttempts)
+		if attempts > maxAttempts {
+			eventMsg = fmt.Sprintf("attempts exceeded max (%d); no further retries", maxAttempts)
+		}
+		_ = s.AddEvent(ctx, id, "error", eventMsg)
+	}
+	return nil
 }
 
 func (s *Store) Requeue(ctx context.Context, id int64) error {

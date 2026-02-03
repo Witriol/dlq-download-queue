@@ -30,7 +30,7 @@ To access the HTTP API from the host, add `-p 8080:8080` and set `-e DLQ_HTTP_AD
 
 ## CLI
 
-- `dlq add <url> [<url2> ...] --out /data/downloads [--name optional] [--site mega|webshare]`
+- `dlq add <url> [<url2> ...] --out /data/downloads [--name optional] [--site mega|webshare|http|https]`
 - `dlq add --file urls.txt --out /data/downloads`
 - `dlq add --stdin --out /data/downloads`
 - `dlq status` (summary + table)
@@ -61,6 +61,7 @@ Presets for out_dir are served from `GET /meta` and configured via `DLQ_OUT_DIR_
 - `dlqd` daemon stores jobs in SQLite, resolves URLs, and starts downloads in aria2 via JSON-RPC.
 - Resolvers default to anonymous mode and surface blocking reasons as error codes:
   `login_required`, `quota_exceeded`, `captcha_needed`, `temporarily_unavailable`.
+- `--site` forces a resolver; unknown values return `unknown_site`.
 - Queue is persistent across restarts (`/state/dlq.db`).
 
 ## Environment variables

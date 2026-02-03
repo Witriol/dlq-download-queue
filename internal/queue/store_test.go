@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,5 +115,70 @@ func TestMarkCompletedSetsBytes(t *testing.T) {
 	}
 	if updated.BytesDone != 42 {
 		t.Fatalf("expected bytes_done 42, got %d", updated.BytesDone)
+	}
+}
+
+func TestListRetryableFailed(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	idRetry, err := store.CreateJob(ctx, &Job{URL: "https://example.com/file1", OutDir: "/data", MaxAttempts: 2})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := store.MarkFailed(ctx, idRetry, "resolve_failed", "fail", time.Now().UTC().Add(-1*time.Minute)); err != nil {
+		t.Fatalf("mark failed: %v", err)
+	}
+	idNoRetry, err := store.CreateJob(ctx, &Job{URL: "https://example.com/file2", OutDir: "/data", MaxAttempts: 1})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := store.MarkFailed(ctx, idNoRetry, "resolve_failed", "fail", time.Now().UTC().Add(-1*time.Minute)); err != nil {
+		t.Fatalf("mark failed: %v", err)
+	}
+	ids, err := store.ListRetryableFailed(ctx, 10)
+	if err != nil {
+		t.Fatalf("list retryable: %v", err)
+	}
+	foundRetry := false
+	foundNoRetry := false
+	for _, id := range ids {
+		if id == idRetry {
+			foundRetry = true
+		}
+		if id == idNoRetry {
+			foundNoRetry = true
+		}
+	}
+	if !foundRetry {
+		t.Fatalf("expected retryable job to be listed")
+	}
+	if foundNoRetry {
+		t.Fatalf("did not expect max-attempts job to be listed")
+	}
+}
+
+func TestMarkFailedLogsMaxAttempts(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	id, err := store.CreateJob(ctx, &Job{URL: "https://example.com/file", OutDir: "/data", MaxAttempts: 1})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := store.MarkFailed(ctx, id, "download_error", "fail", time.Now().UTC()); err != nil {
+		t.Fatalf("mark failed: %v", err)
+	}
+	lines, err := store.ListEvents(ctx, id, 10)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	found := false
+	for _, line := range lines {
+		if strings.Contains(line, "max attempts reached") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected max attempts event to be logged")
 	}
 }

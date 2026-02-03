@@ -61,7 +61,7 @@ func usage() {
 	fmt.Println("DLQ - headless download queue CLI")
 	fmt.Println("")
 	fmt.Println("Usage:")
-	fmt.Println("  dlq add <url> [<url2> ...] --out /data/downloads [--name optional] [--site mega|webshare]")
+	fmt.Println("  dlq add <url> [<url2> ...] --out /data/downloads [--name optional] [--site mega|webshare|http|https]")
 	fmt.Println("  dlq add --file urls.txt --out /data/downloads")
 	fmt.Println("  dlq add --stdin --out /data/downloads")
 	fmt.Println("  dlq status [--watch] [--interval 1] [--status <state>]")
@@ -492,7 +492,7 @@ func formatProgress(done, total int64) string {
 func hasActiveJobs(jobs []jobView) bool {
 	for _, j := range jobs {
 		switch j.Status {
-		case "queued", "resolving", "downloading":
+		case "queued", "resolving", "downloading", "paused":
 			return true
 		}
 	}

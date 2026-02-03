@@ -11,6 +11,7 @@ var (
 	ErrQuotaExceeded  = errors.New("quota_exceeded")
 	ErrCaptchaNeeded  = errors.New("captcha_needed")
 	ErrTemporarilyOff = errors.New("temporarily_unavailable")
+	ErrUnknownSite    = errors.New("unknown_site")
 )
 
 type ResolvedTarget struct {
@@ -28,11 +29,15 @@ type Resolver interface {
 }
 
 type Registry struct {
-	resolvers []Resolver
+	resolvers     []Resolver
+	siteResolvers map[string]Resolver
 }
 
 func NewRegistry(resolvers ...Resolver) *Registry {
-	return &Registry{resolvers: resolvers}
+	return &Registry{
+		resolvers:     resolvers,
+		siteResolvers: map[string]Resolver{},
+	}
 }
 
 func (r *Registry) Resolve(ctx context.Context, rawURL string) (*ResolvedTarget, error) {
@@ -42,6 +47,31 @@ func (r *Registry) Resolve(ctx context.Context, rawURL string) (*ResolvedTarget,
 		}
 	}
 	return nil, errors.New("no_resolver")
+}
+
+func (r *Registry) RegisterSite(name string, res Resolver) {
+	if res == nil {
+		return
+	}
+	if r.siteResolvers == nil {
+		r.siteResolvers = map[string]Resolver{}
+	}
+	key := strings.ToLower(strings.TrimSpace(name))
+	if key == "" {
+		return
+	}
+	r.siteResolvers[key] = res
+}
+
+func (r *Registry) ResolveWithSite(ctx context.Context, site, rawURL string) (*ResolvedTarget, error) {
+	if site = strings.TrimSpace(site); site != "" {
+		key := strings.ToLower(site)
+		if res, ok := r.siteResolvers[key]; ok {
+			return res.Resolve(ctx, rawURL)
+		}
+		return nil, ErrUnknownSite
+	}
+	return r.Resolve(ctx, rawURL)
 }
 
 // NewHTTPResolver returns a pass-through resolver for direct HTTP/HTTPS URLs.
