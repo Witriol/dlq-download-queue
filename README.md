@@ -10,7 +10,6 @@ docker build -t dlq:local .
 docker run -d --name dlq \
   -v /mnt/user/downloads:/data \
   -v /mnt/user/appdata/dlq:/state \
-  -e DLQ_CONCURRENCY=2 \
   dlq:local
 ```
 
@@ -26,7 +25,7 @@ Check status:
 docker exec -it dlq dlq status
 ```
 
-To access the HTTP API from the host, add `-p 8080:8080` and set `-e DLQ_HTTP_ADDR=0.0.0.0:8080`.
+To access the HTTP API from the host, add `-p 8099:8099` and set `-e DLQ_HTTP_ADDR=0.0.0.0:8099` (or set `DLQ_HTTP_HOST`/`DLQ_HTTP_PORT` in `.env` when using compose/dev scripts).
 
 ## CLI
 
@@ -53,10 +52,10 @@ The UI is optional and lives under `ui/`. It proxies the DLQ HTTP API server-sid
 ```
 cd ui
 npm install
-DLQ_API=http://127.0.0.1:8080 npm run dev
+DLQ_API=http://127.0.0.1:8099 npm run dev
 ```
 
-Presets for out_dir are served from `GET /meta` and configured via `DLQ_OUT_DIR_PRESETS`.
+Presets for out_dir are served from `GET /meta` and derived from `DATA_*` volume mappings (container paths).
 
 ## How it works
 
@@ -70,17 +69,23 @@ Presets for out_dir are served from `GET /meta` and configured via `DLQ_OUT_DIR_
 
 - `DLQ_STATE_DIR` (default `/state`)
 - `DLQ_DB` (default `/state/dlq.db`)
-- `DLQ_HTTP_ADDR` (default `127.0.0.1:8080`)
-- `DLQ_CONCURRENCY` (default `2`)
-- `DLQ_OUT_DIR_PRESETS` (default `/data/tvshows,/data/movies`) - comma-separated list for UI presets via `/meta`
+- `DLQ_HTTP_ADDR` (default `0.0.0.0:8099`)
+- `DLQ_HTTP_HOST` / `DLQ_HTTP_PORT` (used by compose/dev scripts to derive `DLQ_HTTP_ADDR`)
 - `PUID` / `PGID` (optional; if set, dlqd + aria2 run as that user)
 - `ARIA2_RPC` (default `http://127.0.0.1:6800/jsonrpc`)
+- `ARIA2_RPC_LISTEN_PORT` (default parsed from `ARIA2_RPC`, fallback `6800`)
 - `ARIA2_SECRET` (optional; recommended)
 - `ARIA2_DISABLE=1` (disable built-in aria2c process in the container)
+- `ARIA2_DIR` (default first `DATA_*` container path, fallback `/data`)
 - `ARIA2_EXTRA_OPTS` (optional extra aria2c flags)
+- `ARIA2_MAX_CONNECTION_PER_SERVER` (default `4`)
 - `ARIA2_SUMMARY_INTERVAL` (default `0`, set >0 to enable aria2 summary output)
 - `ARIA2_CONSOLE_LOG_LEVEL` (default `warn`)
-- aria2 console readout is disabled by default; set `ARIA2_EXTRA_OPTS=--show-console-readout=true` to re-enable.
+- `ARIA2_SHOW_CONSOLE_READOUT` (default `false`)
+
+Concurrency is stored in `settings.json` under `DLQ_STATE_DIR` and can be updated via `dlq settings --concurrency` or the UI. The file is created with the default value on first start.
+UI out_dir presets are derived from `DATA_*` env values (container paths); make sure they are passed into the container.
+All job `out_dir` values must live under one of the `DATA_*` container paths.
 
 ## Notes
 
@@ -120,7 +125,7 @@ The `.env` file is your single source of truth for deployment configuration:
 - `STATE_MOUNT` - State/config volume mapping
 - `PUID`/`PGID`/`TZ` - Runtime user and timezone settings
 
-The deploy script automatically discovers all `DATA_*` variables and derives `DLQ_OUT_DIR_PRESETS` for the UI.
+The deploy script automatically discovers all `DATA_*` variables and passes them through so presets can be derived in the app.
 
 ## Version
 
@@ -137,6 +142,7 @@ go test ./internal/queue
 ## Development
 
 ```
+cp .env.example .env.dev
 scripts/run-dev.sh
 ```
 

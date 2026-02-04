@@ -9,3 +9,4 @@ ui/package-lock.json
 ui/pnpm-lock.yaml
 ui/yarn.lock
 .env
+.env.dev

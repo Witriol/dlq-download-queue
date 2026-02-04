@@ -99,12 +99,18 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, errors.New("missing url or out_dir"))
 			return
 		}
-		id, err := s.Queue.CreateJob(r.Context(), req.URL, req.OutDir, req.Name, req.Site, req.MaxAttempts)
+		maxAttempts := req.MaxAttempts
+		if maxAttempts <= 0 && s.Settings != nil {
+			if v := s.Settings.GetMaxAttempts(); v > 0 {
+				maxAttempts = v
+			}
+		}
+		id, err := s.Queue.CreateJob(r.Context(), req.URL, req.OutDir, req.Name, req.Site, maxAttempts)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
-		log.Printf("action=add id=%d url=%q out=%q name=%q site=%q max_attempts=%d", id, req.URL, req.OutDir, req.Name, req.Site, req.MaxAttempts)
+		log.Printf("action=add id=%d url=%q out=%q name=%q site=%q max_attempts=%d", id, req.URL, req.OutDir, req.Name, req.Site, maxAttempts)
 		writeJSON(w, http.StatusOK, map[string]any{"id": id})
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)

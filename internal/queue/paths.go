@@ -6,22 +6,32 @@ import (
 	"strings"
 )
 
-const dataRoot = "/data"
-
-func cleanOutDir(outDir string) (string, error) {
+func cleanOutDir(outDir string, allowedRoots []string) (string, error) {
 	if outDir == "" {
 		return "", errors.New("missing out_dir")
+	}
+	if len(allowedRoots) == 0 {
+		return "", errors.New("no DATA_* volumes configured")
 	}
 	clean := filepath.Clean(outDir)
 	if !filepath.IsAbs(clean) {
 		return "", errors.New("out_dir must be absolute")
 	}
-	rel, err := filepath.Rel(dataRoot, clean)
-	if err != nil {
-		return "", errors.New("invalid out_dir")
+	allowed := false
+	for _, root := range allowedRoots {
+		rootClean := filepath.Clean(root)
+		rel, err := filepath.Rel(rootClean, clean)
+		if err != nil {
+			continue
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		allowed = true
+		break
 	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", errors.New("out_dir must be within /data")
+	if !allowed {
+		return "", errors.New("out_dir is not within an allowed DATA_* volume")
 	}
 	return clean, nil
 }

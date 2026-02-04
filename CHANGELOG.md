@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 - New SvelteKit UI app under `ui/` with queue dashboard, batch add, and log viewer.
 - UI proxies DLQ API and supports auto-detected site per URL.
-- Added `/meta` endpoint and `DLQ_OUT_DIR_PRESETS` for UI out_dir presets.
+- Added `/meta` endpoint for UI out_dir presets derived from volume mappings.
 
 ## 0.1.0 - 2026-02-02
 

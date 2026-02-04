@@ -6,7 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strconv"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,15 +24,14 @@ func main() {
 	listen := getenv("DLQ_HTTP_ADDR", "0.0.0.0:8080")
 	aria2RPC := getenv("ARIA2_RPC", "http://127.0.0.1:6800/jsonrpc")
 	aria2Secret := getenv("ARIA2_SECRET", "")
-	concurrency := getenvInt("DLQ_CONCURRENCY", 2)
-	outDirPresets := splitCSV(getenvOptional("DLQ_OUT_DIR_PRESETS", "/data/tvshows,/data/movies"))
+	outDirPresets := outDirPresetsFromEnv()
 
 	dbConn, err := db.Open(dbPath)
 	if err != nil {
 		log.Fatalf("db open: %v", err)
 	}
 	store := queue.NewStore(dbConn)
-	service := queue.NewService(store, downloader.NewAria2Client(aria2RPC, aria2Secret))
+	service := queue.NewService(store, downloader.NewAria2Client(aria2RPC, aria2Secret), outDirPresets)
 
 	webshareResolver := resolver.NewWebshareResolver()
 	megaResolver := resolver.NewMegaResolver()
@@ -47,7 +46,7 @@ func main() {
 	resRegistry.RegisterSite("http", httpResolver)
 	resRegistry.RegisterSite("https", httpResolver)
 
-	settings, err := api.NewSettings(stateDir, concurrency)
+	settings, err := api.NewSettings(stateDir)
 	if err != nil {
 		log.Fatalf("settings init: %v", err)
 	}
@@ -101,34 +100,53 @@ func getenv(key, def string) string {
 	return def
 }
 
-func getenvOptional(key, def string) string {
-	if v, ok := os.LookupEnv(key); ok {
-		return v
-	}
-	return def
-}
-
-func getenvInt(key string, def int) int {
-	if v := os.Getenv(key); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil {
-			return parsed
-		}
-	}
-	return def
-}
-
-func splitCSV(raw string) []string {
-	if raw == "" {
-		return nil
-	}
-	parts := strings.Split(raw, ",")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		p := strings.TrimSpace(part)
-		if p == "" {
+func outDirPresetsFromEnv() []string {
+	const prefix = "DATA_"
+	seen := make(map[string]struct{})
+	out := make([]string, 0)
+	for _, env := range os.Environ() {
+		if !strings.HasPrefix(env, prefix) {
 			continue
 		}
-		out = append(out, p)
+		parts := strings.SplitN(env, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		mount := strings.TrimSpace(parts[1])
+		if mount == "" {
+			continue
+		}
+		containerPath := containerPathFromMount(mount)
+		if containerPath == "" {
+			continue
+		}
+		if _, ok := seen[containerPath]; ok {
+			continue
+		}
+		seen[containerPath] = struct{}{}
+		out = append(out, containerPath)
 	}
+	sort.Strings(out)
 	return out
+}
+
+func containerPathFromMount(mount string) string {
+	if mount == "" {
+		return ""
+	}
+	if !strings.Contains(mount, ":") {
+		return mount
+	}
+	parts := strings.Split(mount, ":")
+	if len(parts) < 2 {
+		return ""
+	}
+	if len(parts) == 2 {
+		return strings.TrimSpace(parts[1])
+	}
+	last := strings.TrimSpace(parts[len(parts)-1])
+	if strings.Contains(last, "/") {
+		return last
+	}
+	return strings.TrimSpace(parts[len(parts)-2])
 }

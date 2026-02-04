@@ -339,6 +339,56 @@ input[type="checkbox"]:checked::before {
   color: var(--muted);
 }
 
+.presets-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px dashed rgba(148, 163, 184, 0.35);
+  background: rgba(12, 16, 24, 0.6);
+}
+
+.presets-label {
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.presets-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.preset-btn {
+  border: 1px solid rgba(20, 184, 166, 0.35);
+  background: rgba(20, 184, 166, 0.12);
+  color: #99f6e4;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border 0.15s ease;
+}
+
+.preset-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
+  border-color: rgba(20, 184, 166, 0.6);
+}
+
+.presets-empty {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .notice {
   font-size: 13px;
   color: var(--muted);
@@ -355,13 +405,13 @@ input[type="checkbox"]:checked::before {
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 12px;
-  padding: 8px;
+  padding: 12px;
   background: rgba(12, 16, 24, 0.8);
 }
 
 .result-item {
   font-size: 12px;
-  padding: 4px 0;
+  padding: 8px 0;
 }
 
 .small {
@@ -411,12 +461,68 @@ input[type="checkbox"]:checked::before {
   z-index: 50;
 }
 
+.modal.panel {
+  animation: modalFade 0.25s ease;
+}
+
+@keyframes modalFade {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -48%);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+}
+
+.modal.modal-wide {
+  width: min(760px, calc(100vw - 40px));
+  max-height: calc(100vh - 80px);
+  min-width: min(640px, calc(100vw - 40px));
+  min-height: min(520px, calc(100vh - 120px));
+}
+
 .modal-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 12px;
   margin-bottom: 12px;
+}
+
+.browser-dialog {
+  display: flex;
+  flex-direction: column;
+}
+
+.browser-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+
+.browser-main {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+
+.browser-list {
+  flex: 1;
+  min-height: 260px;
+  width: 100%;
+}
+
+.browser-footer {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 @media (prefers-reduced-motion: reduce) {

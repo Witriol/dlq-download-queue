@@ -8,19 +8,22 @@ import (
 )
 
 type Service struct {
-	store      *Store
-	downloader Downloader
+	store         *Store
+	downloader    Downloader
+	allowedRoots []string
 }
 
-func NewService(store *Store, dl Downloader) *Service {
-	return &Service{store: store, downloader: dl}
+func NewService(store *Store, dl Downloader, allowedRoots []string) *Service {
+	roots := make([]string, 0, len(allowedRoots))
+	roots = append(roots, allowedRoots...)
+	return &Service{store: store, downloader: dl, allowedRoots: roots}
 }
 
 func (s *Service) CreateJob(ctx context.Context, url, outDir, name, site string, maxAttempts int) (int64, error) {
 	if maxAttempts <= 0 {
 		maxAttempts = 5
 	}
-	cleanOut, err := cleanOutDir(outDir)
+	cleanOut, err := cleanOutDir(outDir, s.allowedRoots)
 	if err != nil {
 		return 0, err
 	}

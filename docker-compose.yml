@@ -6,16 +6,17 @@ services:
     image: dlq:latest
     container_name: dlq
     restart: unless-stopped
+    env_file:
+      - .env
     ports:
-      - "8080:8080"
+      - "${DLQ_HTTP_PORT}:${DLQ_HTTP_PORT}"
     volumes:
       # Data mounts from .env (add more DATA_* vars as needed)
       - ${DATA_TVSHOWS}
       - ${DATA_MOVIES}
       - ${STATE_MOUNT}
     environment:
-      - DLQ_HTTP_ADDR=0.0.0.0:8080
-      - DLQ_OUT_DIR_PRESETS=/data/tvshows,/data/movies
+      - DLQ_HTTP_ADDR=${DLQ_HTTP_HOST}:${DLQ_HTTP_PORT}
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
       - TZ=${TZ:-UTC}

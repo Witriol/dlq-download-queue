@@ -101,12 +101,14 @@ export async function getMeta(): Promise<Meta> {
   return requestJson<Meta>('/api/meta');
 }
 
-export async function getSettings(): Promise<{ concurrency: number }> {
-  return requestJson<{ concurrency: number }>('/api/settings');
+export async function getSettings(): Promise<{ concurrency: number; max_attempts: number }> {
+  return requestJson<{ concurrency: number; max_attempts: number }>('/api/settings');
 }
 
-export async function updateSettings(updates: { concurrency?: number }): Promise<{ concurrency: number }> {
-  return requestJson<{ concurrency: number }>('/api/settings', {
+export async function updateSettings(
+  updates: { concurrency?: number; max_attempts?: number }
+): Promise<{ concurrency: number; max_attempts: number }> {
+  return requestJson<{ concurrency: number; max_attempts: number }>('/api/settings', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(updates)

@@ -23,14 +23,14 @@
   let showClearConfirm = false;
 
   let addOutDir = '';
-  let addMaxAttempts = 5;
   let addUrlsText = '';
   let addResults = [];
+  let addErrors = [];
   let adding = false;
   let addError = '';
-  let clipboardError = '';
   let outDirPresets = [];
   let metaError = '';
+  let outDirPlaceholder = 'Select a preset or type a path';
 
   let showLogs = false;
   let logsJob = null;
@@ -193,7 +193,6 @@
   async function handleAdd() {
     addError = '';
     addResults = [];
-    clipboardError = '';
     const urls = parseUrls(addUrlsText);
     if (!addOutDir) {
       addError = 'Out directory is required.';
@@ -203,16 +202,16 @@
       addError = 'Add at least one URL.';
       return;
     }
-    const maxAttempts = Math.max(1, Number(addMaxAttempts) || 5);
     adding = true;
     addResults = await addJobsBatch({
       urls,
-      out_dir: addOutDir,
-      max_attempts: maxAttempts
+      out_dir: addOutDir
     }, (url) => detectSite(url) || undefined);
     adding = false;
     await refresh();
     if (addResults.every((r) => r.ok)) {
+      addUrlsText = '';
+      addResults = [];
       showAdd = false;
     }
   }
@@ -248,21 +247,6 @@
     const appended = texts.join('\n');
     addUrlsText = addUrlsText ? `${addUrlsText}\n${appended}` : appended;
     input.value = '';
-  }
-
-  async function handlePasteClipboard() {
-    clipboardError = '';
-    if (!navigator.clipboard || !navigator.clipboard.readText) {
-      clipboardError = 'Clipboard access is not available.';
-      return;
-    }
-    try {
-      const text = await navigator.clipboard.readText();
-      if (!text) return;
-      addUrlsText = addUrlsText ? `${addUrlsText}\n${text}` : text;
-    } catch (err) {
-      clipboardError = err instanceof Error ? err.message : String(err);
-    }
   }
 
   async function loadMeta() {
@@ -397,6 +381,9 @@
   $: parsedUrls = parseUrls(addUrlsText);
   $: detectedCounts = countDetectedSites(parsedUrls);
   $: sortedJobs = sortJobs(jobs);
+  $: addErrors = addResults.filter((result) => !result.ok);
+  $: outDirPlaceholder = outDirPresets.length > 0 ? outDirPresets[0] : 'Select a preset or type a path';
+  $: outDirPlaceholder = outDirPresets.length > 0 ? outDirPresets[0] : 'Select a preset or type a path';
 
   $: {
     logsAutoRefresh;
@@ -530,7 +517,7 @@
 
 {#if showAdd}
   <div class="modal-backdrop" on:click={() => (showAdd = false)}></div>
-  <div class="modal panel" role="dialog" aria-modal="true">
+  <div class="modal panel modal-wide" role="dialog" aria-modal="true">
     <div class="modal-header">
       <div>
         <h2 style="margin: 0;">Add Jobs</h2>
@@ -542,37 +529,34 @@
       <div>
         <label>Out Directory</label>
         <div class="actions">
-          <input type="text" placeholder="/data/downloads" bind:value={addOutDir} style="flex: 1;" />
+          <input type="text" placeholder={outDirPlaceholder} bind:value={addOutDir} style="flex: 1;" />
           <button class="btn ghost" type="button" on:click={openBrowser}>Browse</button>
         </div>
       </div>
-      <div class="actions">
-        <span class="badge">Presets</span>
+      <div class="presets-row">
+        <span class="presets-label">Presets</span>
         {#if outDirPresets.length === 0}
-          <span class="small">No presets available.</span>
+          <span class="presets-empty">No presets available.</span>
         {:else}
-          {#each outDirPresets as preset}
-            <button class="btn ghost" type="button" on:click={() => (addOutDir = preset)}>{preset}</button>
-          {/each}
+          <div class="presets-list">
+            {#each outDirPresets as preset}
+              <button class="preset-btn" type="button" on:click={() => (addOutDir = preset)}>{preset}</button>
+            {/each}
+          </div>
         {/if}
-      </div>
-      <div>
-        <label>Max Attempts</label>
-        <input type="number" min="1" max="20" bind:value={addMaxAttempts} />
       </div>
       <div>
         <label>URLs</label>
         <textarea bind:value={addUrlsText} placeholder="https://...\nhttps://..."></textarea>
       </div>
       <div class="badge">
-        URLs: {parsedUrls.length} | detected mega: {detectedCounts.mega}, webshare: {detectedCounts.webshare}, unknown: {detectedCounts.unknown}
+        URLs: {parsedUrls.length}
       </div>
       <div class="actions">
         <label class="btn ghost">
           Import file(s)
           <input type="file" multiple accept=".txt" style="display: none" on:change={handleFiles} />
         </label>
-        <button class="btn ghost" type="button" on:click={handlePasteClipboard}>Paste clipboard</button>
         <button class="btn ghost" type="button" on:click={() => (addUrlsText = '')}>Clear</button>
         <button class="btn primary" type="button" on:click={handleAdd} disabled={adding}>
           {adding ? 'Adding...' : 'Add Jobs'}
@@ -583,23 +567,16 @@
     {#if addError}
       <p class="notice">{addError}</p>
     {/if}
-    {#if clipboardError}
-      <p class="notice">Clipboard: {clipboardError}</p>
-    {/if}
     {#if metaError}
       <p class="notice">Presets: {metaError}</p>
     {/if}
 
-    {#if addResults.length > 0}
+    {#if addErrors.length > 0}
       <div class="divider"></div>
       <div class="result-list">
-        {#each addResults as result}
+        {#each addErrors as result}
           <div class="result-item">
-            {#if result.ok}
-              [OK] {result.url} -> id {result.id}
-            {:else}
-              [ERR] {result.url} -> {result.error}
-            {/if}
+            [ERR] {result.url} -> {result.error}
           </div>
         {/each}
       </div>
@@ -697,7 +674,7 @@
 
 {#if showBrowser}
   <div class="modal-backdrop" on:click={() => (showBrowser = false)}></div>
-  <div class="modal panel" role="dialog" aria-modal="true">
+  <div class="modal panel modal-wide browser-dialog" role="dialog" aria-modal="true">
     <div class="modal-header">
       <div>
         <h2 style="margin: 0;">Select Folder</h2>
@@ -706,58 +683,67 @@
       <button class="btn ghost" on:click={() => (showBrowser = false)}>Close</button>
     </div>
 
-    <!-- Breadcrumb navigation -->
-    {#if browserPath}
-      <div class="toolbar" style="margin-bottom: 12px;">
-        <span class="badge">Path:</span>
-        {#if browserParent && !browserIsRoot}
-          <button class="btn ghost" on:click={() => loadBrowser(browserParent)}>↑ Up</button>
-        {/if}
-        <button class="btn ghost" on:click={() => loadBrowser('')}>🏠 Root</button>
-        <span>{browserPath}</span>
-      </div>
-    {/if}
-
-    <!-- Directory listing -->
-    <div class="result-list" style="max-height: 300px; margin-bottom: 12px;">
-      {#if browserLoading}
-        <div class="result-item">Loading...</div>
-      {:else if browserDirs.length === 0}
-        <div class="result-item">No subdirectories</div>
-      {:else}
-        {#each browserDirs as dir}
-          <div class="result-item" style="cursor: pointer;">
-            <button class="btn ghost" on:click={() => loadBrowser(browserPath ? `${browserPath}/${dir}` : `/${dir}`)}>
-              📁 {dir}
-            </button>
+    <div class="browser-body">
+      <div class="browser-main">
+        <!-- Breadcrumb navigation -->
+        {#if browserPath}
+          <div class="toolbar">
+            <span class="badge">Path:</span>
+            {#if browserParent && !browserIsRoot}
+              <button class="btn ghost" on:click={() => loadBrowser(browserParent)}>↑ Up</button>
+            {/if}
+            <button class="btn ghost" on:click={() => loadBrowser('')}>🏠 Root</button>
+            <span>{browserPath}</span>
           </div>
-        {/each}
-      {/if}
-    </div>
+        {/if}
 
-    {#if browserError}
-      <p class="notice">Error: {browserError}</p>
-    {/if}
+        <!-- Directory listing -->
+        <div class="result-list browser-list">
+          {#if browserLoading}
+            <div class="result-item">Loading...</div>
+          {:else if browserDirs.length === 0}
+            <div class="result-item">No subdirectories</div>
+          {:else}
+            {#each browserDirs as dir}
+              <div class="result-item" style="cursor: pointer;">
+                <button
+                  class="btn ghost"
+                  on:click={() => loadBrowser(dir.startsWith('/') ? dir : (browserPath ? `${browserPath}/${dir}` : `/${dir}`))}
+                >
+                  📁 {dir}
+                </button>
+              </div>
+            {/each}
+          {/if}
+        </div>
 
-    <!-- New folder -->
-    <div class="form-grid">
-      <div>
-        <label>Create New Folder</label>
+        {#if browserError}
+          <p class="notice">Error: {browserError}</p>
+        {/if}
+      </div>
+
+      <div class="browser-footer">
+        <!-- New folder -->
+        <div class="form-grid">
+          <div>
+            <label>Create New Folder</label>
+            <div class="actions">
+              <input type="text" placeholder="Folder name" bind:value={browserNewFolderName} style="flex: 1;" />
+              <button class="btn ghost" on:click={createFolder} disabled={!browserNewFolderName.trim()}>
+                + Create
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Action buttons -->
         <div class="actions">
-          <input type="text" placeholder="Folder name" bind:value={browserNewFolderName} />
-          <button class="btn ghost" on:click={createFolder} disabled={!browserNewFolderName.trim()}>
-            + Create
+          <button class="btn primary" on:click={() => selectBrowserPath(browserPath)}>
+            Select Current Folder
           </button>
+          <button class="btn ghost" on:click={() => (showBrowser = false)}>Cancel</button>
         </div>
       </div>
-    </div>
-
-    <!-- Action buttons -->
-    <div class="actions">
-      <button class="btn primary" on:click={() => selectBrowserPath(browserPath)}>
-        Select Current Folder
-      </button>
-      <button class="btn ghost" on:click={() => (showBrowser = false)}>Cancel</button>
     </div>
   </div>
 {/if}

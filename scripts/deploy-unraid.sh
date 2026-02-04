@@ -25,6 +25,10 @@ set +a
 VERSION="$(cat "${repo_root}/VERSION")"
 [[ -z "${VERSION}" ]] && { echo "ERROR: VERSION is empty" >&2; exit 1; }
 
+DLQ_HTTP_HOST="${DLQ_HTTP_HOST:-127.0.0.1}"
+DLQ_HTTP_PORT="${DLQ_HTTP_PORT:-8080}"
+DLQ_HTTP_ADDR="${DLQ_HTTP_ADDR:-${DLQ_HTTP_HOST}:${DLQ_HTTP_PORT}}"
+
 # Constants
 IMAGE_REPO="dlq"
 CONTAINER_NAME="dlq"
@@ -32,19 +36,18 @@ REMOTE_TAR="/tmp/dlq.tar.gz"
 IMAGE_TAG_VERSIONED="${IMAGE_REPO}:${VERSION}"
 IMAGE_TAG_LATEST="${IMAGE_REPO}:latest"
 
-# Parse DATA_* variables to build volume flags and presets
+# Parse DATA_* variables to build volume flags and env passthrough
 VOLUME_FLAGS=()
-PRESETS=()
+ENV_FLAGS=()
 HOST_PATHS=()
 for var in $(compgen -v | grep '^DATA_'); do
   mount="${!var}"
   [[ -z "${mount}" ]] && continue
   IFS=':' read -r host_path container_path <<< "${mount}"
   VOLUME_FLAGS+=("-v" "${mount}")
-  PRESETS+=("${container_path}")
+  ENV_FLAGS+=("-e" "${var}=${mount}")
   HOST_PATHS+=("${host_path}")
 done
-DLQ_OUT_DIR_PRESETS="$(IFS=','; echo "${PRESETS[*]}")"
 
 if [[ ${#VOLUME_FLAGS[@]} -eq 0 ]]; then
   echo "ERROR: No DATA_* variables found in .env" >&2
@@ -85,9 +88,8 @@ if [[ "${DEPLOY}" == "true" ]]; then
     docker run -d --name ${CONTAINER_NAME} --restart unless-stopped \
       ${VOLUME_ARGS} \
       -v '${STATE_MOUNT}' \
-      -e DLQ_HTTP_ADDR=127.0.0.1:8080 \
-      -e DLQ_CONCURRENCY=2 \
-      -e DLQ_OUT_DIR_PRESETS=${DLQ_OUT_DIR_PRESETS} \
+      -e DLQ_HTTP_ADDR=${DLQ_HTTP_ADDR} \
+      ${ENV_FLAGS[*]} \
       -e PUID=${PUID} \
       -e PGID=${PGID} \
       -e TZ=${TZ} \
