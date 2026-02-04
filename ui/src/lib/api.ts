@@ -100,3 +100,35 @@ export async function clearJobs(): Promise<{ status: string }> {
 export async function getMeta(): Promise<Meta> {
   return requestJson<Meta>('/api/meta');
 }
+
+export async function getSettings(): Promise<{ concurrency: number }> {
+  return requestJson<{ concurrency: number }>('/api/settings');
+}
+
+export async function updateSettings(updates: { concurrency?: number }): Promise<{ concurrency: number }> {
+  return requestJson<{ concurrency: number }>('/api/settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(updates)
+  });
+}
+
+export interface BrowseResponse {
+  path: string;
+  parent: string;
+  dirs: string[];
+  is_root: boolean;
+}
+
+export async function browse(path?: string): Promise<BrowseResponse> {
+  const url = path ? `/api/browse?path=${encodeURIComponent(path)}` : '/api/browse';
+  return requestJson<BrowseResponse>(url);
+}
+
+export async function mkdir(path: string): Promise<{ ok: boolean; path: string }> {
+  return requestJson<{ ok: boolean; path: string }>('/api/browse/mkdir', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path })
+  });
+}

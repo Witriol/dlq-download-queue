@@ -4,7 +4,7 @@
 
 <script>
   import { onMount } from 'svelte';
-  import { addJobsBatch, clearJobs, getEvents, getMeta, listJobs, postAction } from '$lib/api';
+  import { addJobsBatch, browse, clearJobs, getEvents, getMeta, getSettings, listJobs, mkdir, postAction, updateSettings } from '$lib/api';
   import { filePath, formatETA, formatProgress, formatSpeed } from '$lib/format';
 
   const statusOptions = ['', 'queued', 'resolving', 'downloading', 'paused', 'completed', 'failed', 'deleted'];
@@ -41,6 +41,20 @@
   let logsError = '';
   let logsLoading = false;
   let logsTimer = null;
+
+  let showSettings = false;
+  let settingsConcurrency = 2;
+  let settingsError = '';
+  let settingsSaving = false;
+
+  let showBrowser = false;
+  let browserPath = '';
+  let browserDirs = [];
+  let browserParent = '';
+  let browserIsRoot = false;
+  let browserError = '';
+  let browserLoading = false;
+  let browserNewFolderName = '';
 
   function parseUrls(text) {
     const lines = text.split(/\r?\n/);
@@ -306,6 +320,74 @@
     stopLogsTimer();
   }
 
+  async function loadSettings() {
+    settingsError = '';
+    try {
+      const settings = await getSettings();
+      settingsConcurrency = settings.concurrency;
+    } catch (err) {
+      settingsError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function saveSettings() {
+    settingsError = '';
+    settingsSaving = true;
+    try {
+      const updated = await updateSettings({ concurrency: settingsConcurrency });
+      settingsConcurrency = updated.concurrency;
+      showSettings = false;
+    } catch (err) {
+      settingsError = err instanceof Error ? err.message : String(err);
+    } finally {
+      settingsSaving = false;
+    }
+  }
+
+  function openSettings() {
+    showSettings = true;
+    loadSettings();
+  }
+
+  async function loadBrowser(path = '') {
+    browserLoading = true;
+    browserError = '';
+    try {
+      const result = await browse(path || undefined);
+      browserPath = result.path;
+      browserParent = result.parent;
+      browserDirs = result.dirs;
+      browserIsRoot = result.is_root;
+      browserNewFolderName = '';
+    } catch (err) {
+      browserError = err instanceof Error ? err.message : String(err);
+    } finally {
+      browserLoading = false;
+    }
+  }
+
+  async function createFolder() {
+    if (!browserNewFolderName.trim()) return;
+    browserError = '';
+    const newPath = browserPath ? `${browserPath}/${browserNewFolderName}` : `/${browserNewFolderName}`;
+    try {
+      await mkdir(newPath);
+      await loadBrowser(browserPath);
+    } catch (err) {
+      browserError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  function openBrowser() {
+    showBrowser = true;
+    loadBrowser();
+  }
+
+  function selectBrowserPath(path) {
+    addOutDir = path;
+    showBrowser = false;
+  }
+
   $: {
     autoRefresh;
     refreshInterval;
@@ -338,6 +420,7 @@
       <h1>DLQ Control Deck</h1>
     </div>
     <div class="toolbar">
+      <button class="btn ghost" on:click={openSettings}>Settings</button>
       <button class="btn danger" on:click={() => (showClearConfirm = true)}>Clear All</button>
     </div>
   </header>
@@ -458,7 +541,10 @@
     <div class="form-grid">
       <div>
         <label>Out Directory</label>
-        <input type="text" placeholder="/data/downloads" bind:value={addOutDir} />
+        <div class="actions">
+          <input type="text" placeholder="/data/downloads" bind:value={addOutDir} style="flex: 1;" />
+          <button class="btn ghost" type="button" on:click={openBrowser}>Browse</button>
+        </div>
       </div>
       <div class="actions">
         <span class="badge">Presets</span>
@@ -576,6 +662,102 @@
     <div class="actions">
       <button class="btn danger" on:click={confirmClear}>Yes, clear all</button>
       <button class="btn ghost" on:click={() => (showClearConfirm = false)}>Cancel</button>
+    </div>
+  </div>
+{/if}
+
+{#if showSettings}
+  <div class="modal-backdrop" on:click={() => (showSettings = false)}></div>
+  <div class="modal panel" role="dialog" aria-modal="true">
+    <div class="modal-header">
+      <div>
+        <h2 style="margin: 0;">Settings</h2>
+        <p class="notice">Configure runtime settings</p>
+      </div>
+      <button class="btn ghost" on:click={() => (showSettings = false)}>Close</button>
+    </div>
+    <div class="form-grid">
+      <div>
+        <label>Concurrency (1-10)</label>
+        <input type="number" min="1" max="10" bind:value={settingsConcurrency} />
+        <p class="notice">Number of concurrent downloads</p>
+      </div>
+      <div class="actions">
+        <button class="btn primary" on:click={saveSettings} disabled={settingsSaving}>
+          {settingsSaving ? 'Saving...' : 'Save'}
+        </button>
+        <button class="btn ghost" on:click={() => (showSettings = false)}>Cancel</button>
+      </div>
+    </div>
+    {#if settingsError}
+      <p class="notice">Error: {settingsError}</p>
+    {/if}
+  </div>
+{/if}
+
+{#if showBrowser}
+  <div class="modal-backdrop" on:click={() => (showBrowser = false)}></div>
+  <div class="modal panel" role="dialog" aria-modal="true">
+    <div class="modal-header">
+      <div>
+        <h2 style="margin: 0;">Select Folder</h2>
+        <p class="notice">Browse and select a destination folder</p>
+      </div>
+      <button class="btn ghost" on:click={() => (showBrowser = false)}>Close</button>
+    </div>
+
+    <!-- Breadcrumb navigation -->
+    {#if browserPath}
+      <div class="toolbar" style="margin-bottom: 12px;">
+        <span class="badge">Path:</span>
+        {#if browserParent && !browserIsRoot}
+          <button class="btn ghost" on:click={() => loadBrowser(browserParent)}>↑ Up</button>
+        {/if}
+        <button class="btn ghost" on:click={() => loadBrowser('')}>🏠 Root</button>
+        <span>{browserPath}</span>
+      </div>
+    {/if}
+
+    <!-- Directory listing -->
+    <div class="result-list" style="max-height: 300px; margin-bottom: 12px;">
+      {#if browserLoading}
+        <div class="result-item">Loading...</div>
+      {:else if browserDirs.length === 0}
+        <div class="result-item">No subdirectories</div>
+      {:else}
+        {#each browserDirs as dir}
+          <div class="result-item" style="cursor: pointer;">
+            <button class="btn ghost" on:click={() => loadBrowser(browserPath ? `${browserPath}/${dir}` : `/${dir}`)}>
+              📁 {dir}
+            </button>
+          </div>
+        {/each}
+      {/if}
+    </div>
+
+    {#if browserError}
+      <p class="notice">Error: {browserError}</p>
+    {/if}
+
+    <!-- New folder -->
+    <div class="form-grid">
+      <div>
+        <label>Create New Folder</label>
+        <div class="actions">
+          <input type="text" placeholder="Folder name" bind:value={browserNewFolderName} />
+          <button class="btn ghost" on:click={createFolder} disabled={!browserNewFolderName.trim()}>
+            + Create
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Action buttons -->
+    <div class="actions">
+      <button class="btn primary" on:click={() => selectBrowserPath(browserPath)}>
+        Select Current Folder
+      </button>
+      <button class="btn ghost" on:click={() => (showBrowser = false)}>Cancel</button>
     </div>
   </div>
 {/if}

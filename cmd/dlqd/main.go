@@ -47,12 +47,17 @@ func main() {
 	resRegistry.RegisterSite("http", httpResolver)
 	resRegistry.RegisterSite("https", httpResolver)
 
+	settings, err := api.NewSettings(stateDir, concurrency)
+	if err != nil {
+		log.Fatalf("settings init: %v", err)
+	}
+
 	runner := &queue.Runner{
-		Store:       store,
-		Resolvers:   resRegistry,
-		Downloader:  downloader.NewAria2Client(aria2RPC, aria2Secret),
-		Concurrency: concurrency,
-		PollEvery:   2 * time.Second,
+		Store:          store,
+		Resolvers:      resRegistry,
+		Downloader:     downloader.NewAria2Client(aria2RPC, aria2Secret),
+		GetConcurrency: settings.GetConcurrency,
+		PollEvery:      2 * time.Second,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -60,8 +65,9 @@ func main() {
 	go runner.Start(ctx)
 
 	server := &api.Server{
-		Queue: service,
-		Meta:  &api.Meta{OutDirPresets: outDirPresets},
+		Queue:    service,
+		Meta:     &api.Meta{OutDirPresets: outDirPresets},
+		Settings: settings,
 	}
 	ln, err := net.Listen("tcp", listen)
 	if err != nil {

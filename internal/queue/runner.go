@@ -13,17 +13,27 @@ import (
 )
 
 type Runner struct {
-	Store       *Store
-	Resolvers   *resolver.Registry
-	Downloader  Downloader
-	Concurrency int
-	PollEvery   time.Duration
+	Store          *Store
+	Resolvers      *resolver.Registry
+	Downloader     Downloader
+	Concurrency    int            // static fallback
+	GetConcurrency func() int     // dynamic getter (preferred if set)
+	PollEvery      time.Duration
+}
+
+func (r *Runner) concurrency() int {
+	if r.GetConcurrency != nil {
+		if c := r.GetConcurrency(); c > 0 {
+			return c
+		}
+	}
+	if r.Concurrency > 0 {
+		return r.Concurrency
+	}
+	return 2
 }
 
 func (r *Runner) Start(ctx context.Context) {
-	if r.Concurrency <= 0 {
-		r.Concurrency = 2
-	}
 	if r.PollEvery <= 0 {
 		r.PollEvery = 2 * time.Second
 	}
@@ -49,7 +59,7 @@ func (r *Runner) tick(ctx context.Context) {
 	}
 	// Start new jobs if capacity.
 	active := r.countDownloading(ctx)
-	for active < r.Concurrency {
+	for active < r.concurrency() {
 		job, err := r.Store.ClaimNextQueued(ctx)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {

@@ -42,6 +42,8 @@ To access the HTTP API from the host, add `-p 8080:8080` and set `-e DLQ_HTTP_AD
 - `dlq resume <job_id>`
 - `dlq remove <job_id>` (soft delete)
 - `dlq clear` (hard delete + reset IDs)
+- `dlq settings` (show current settings)
+- `dlq settings --concurrency <1-10>` (update concurrency)
 - `dlq help`
 
 ## UI (SvelteKit)
@@ -89,34 +91,36 @@ Presets for out_dir are served from `GET /meta` and configured via `DLQ_OUT_DIR_
 - If you set `PUID`/`PGID`, ensure `/data` and `/state` are writable by that user on the host.
 - If you see `attempt to write a readonly database`, fix permissions on the host (e.g., `chown -R 99:100 /mnt/user/appdata/dlq`).
 
-## Unraid
+## Docker Compose
 
-Template: `templates/unraid-dlq.xml`
+```bash
+# Copy .env.example to .env and edit it
+cp .env.example .env
+
+# Start the service
+docker-compose up -d
+```
 
 ## Deploy to Unraid
 
-```
+```bash
+# Copy .env.example to .env and edit it
+cp .env.example .env
+
+# Build and transfer image only
 scripts/deploy-unraid.sh
+
+# Build, transfer, and deploy container
+scripts/deploy-unraid.sh --deploy
 ```
 
-Environment overrides (optional):
+The `.env` file is your single source of truth for deployment configuration:
+- `REMOTE_HOST` - SSH alias for your Unraid server
+- `DATA_*` - Volume mappings (e.g., `DATA_TVSHOWS=/mnt/user/tvshows:/data/tvshows`)
+- `STATE_MOUNT` - State/config volume mapping
+- `PUID`/`PGID`/`TZ` - Runtime user and timezone settings
 
-- `REMOTE_HOST` (default `HOMENAS`)
-- `VERSION_FILE` (default `VERSION`)
-- `IMAGE_REPO` (default `dlq`)
-- `REMOTE_TAR` (default `/tmp/dlq.tar.gz`)
-- `CONTAINER_NAME` (default `dlq`)
-- `TEMPLATE_TPL` (default `templates/unraid-dlq.tpl.xml`)
-- `REMOTE_TEMPLATE` (default `/boot/config/plugins/dockerMan/templates-user/my-downloader-queue.xml`)
-- `REMOTE_CONTAINER_TEMPLATE` (default `/boot/config/plugins/dockerMan/templates-user/my-dlq.xml`)
-- `TV_SHOWS_PATH` (default `/mnt/user/tvshows`)
-- `MOVIES_PATH` (default `/mnt/user/movies`)
-- `STATE_PATH` (default `/mnt/user/appdata/dlq`)
-- `HTTP_ADDR` (default `127.0.0.1:8080`)
-- `DLQ_CONCURRENCY` (default `2`)
-- `PUID` (default `99`)
-- `PGID` (default `100`)
-- `TZ` (default `UTC`)
+The deploy script automatically discovers all `DATA_*` variables and derives `DLQ_OUT_DIR_PRESETS` for the UI.
 
 ## Version
 

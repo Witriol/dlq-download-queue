@@ -43,6 +43,8 @@ func main() {
 		cmdPause(os.Args[2:])
 	case "resume":
 		cmdResume(os.Args[2:])
+	case "settings":
+		cmdSettings(os.Args[2:])
 	case "help":
 		usage()
 	default:
@@ -72,6 +74,7 @@ func usage() {
 	fmt.Println("  dlq resume <job_id>")
 	fmt.Println("  dlq remove <job_id>")
 	fmt.Println("  dlq clear")
+	fmt.Println("  dlq settings [--concurrency <1-10>]")
 	fmt.Println("")
 	fmt.Println("Env:")
 	fmt.Println("  DLQ_API=http://127.0.0.1:8080")
@@ -386,6 +389,43 @@ func cmdResume(args []string) {
 		return
 	}
 	fmt.Println("ok")
+}
+
+func cmdSettings(args []string) {
+	fs := flag.NewFlagSet("settings", flag.ExitOnError)
+	api := fs.String("api", apiBase(), "api base URL")
+	concurrency := fs.Int("concurrency", 0, "set concurrency (1-10)")
+	fs.Parse(args)
+
+	// If no flags set, just show current settings
+	if *concurrency == 0 {
+		var settings map[string]interface{}
+		if err := getJSON(*api+"/api/settings", &settings); err != nil {
+			fmt.Println("error:", err)
+			return
+		}
+		fmt.Println("Current settings:")
+		for k, v := range settings {
+			fmt.Printf("  %s: %v\n", k, v)
+		}
+		return
+	}
+
+	// Update settings
+	updates := make(map[string]interface{})
+	if *concurrency > 0 {
+		updates["concurrency"] = *concurrency
+	}
+
+	var result map[string]interface{}
+	if err := postJSON(*api+"/api/settings", updates, &result); err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fmt.Println("Settings updated:")
+	for k, v := range result {
+		fmt.Printf("  %s: %v\n", k, v)
+	}
 }
 
 func getJSON(url string, out interface{}) error {

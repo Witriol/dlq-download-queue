@@ -6,6 +6,9 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -29,8 +32,9 @@ type Queue interface {
 type JobView = queue.JobView
 
 type Server struct {
-	Queue Queue
-	Meta  *Meta
+	Queue    Queue
+	Meta     *Meta
+	Settings *Settings
 }
 
 func (s *Server) Handler() http.Handler {
@@ -39,6 +43,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/jobs", s.handleJobs)
 	mux.HandleFunc("/jobs/clear", s.handleJobsClear)
 	mux.HandleFunc("/jobs/", s.handleJob)
+	mux.HandleFunc("/api/settings", s.handleSettings)
+	mux.HandleFunc("/api/browse/mkdir", s.handleBrowseMkdir)
+	mux.HandleFunc("/api/browse", s.handleBrowse)
 	return withRequestLimit(mux, maxRequestBodyBytes)
 }
 
@@ -203,6 +210,205 @@ func (s *Server) handleJobsClear(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("action=clear")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	if s.Settings == nil {
+		writeErr(w, http.StatusInternalServerError, errors.New("settings not initialized"))
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, s.Settings.Get())
+	case http.MethodPost:
+		var updates map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				writeErr(w, http.StatusRequestEntityTooLarge, errors.New("request body too large"))
+				return
+			}
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.Settings.Update(updates); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.Settings.Save(); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		log.Printf("action=settings_update")
+		writeJSON(w, http.StatusOK, s.Settings.Get())
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+type browseResponse struct {
+	Path   string   `json:"path"`
+	Parent string   `json:"parent"`
+	Dirs   []string `json:"dirs"`
+	IsRoot bool     `json:"is_root"`
+}
+
+func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		// Return root presets if no path specified
+		if s.Meta == nil || len(s.Meta.OutDirPresets) == 0 {
+			writeJSON(w, http.StatusOK, browseResponse{
+				Path:   "",
+				Parent: "",
+				Dirs:   []string{},
+				IsRoot: true,
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, browseResponse{
+			Path:   "",
+			Parent: "",
+			Dirs:   s.Meta.OutDirPresets,
+			IsRoot: true,
+		})
+		return
+	}
+
+	// Validate path is under an allowed root
+	if !s.isAllowedPath(path) {
+		writeErr(w, http.StatusForbidden, errors.New("path not allowed"))
+		return
+	}
+
+	// Check if path exists and is a directory
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeErr(w, http.StatusNotFound, errors.New("path not found"))
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !info.IsDir() {
+		writeErr(w, http.StatusBadRequest, errors.New("path is not a directory"))
+		return
+	}
+
+	// List directories
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	dirs := []string{}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			dirs = append(dirs, entry.Name())
+		}
+	}
+	sort.Strings(dirs)
+
+	parent := filepath.Dir(path)
+	if parent == path {
+		parent = ""
+	}
+
+	writeJSON(w, http.StatusOK, browseResponse{
+		Path:   path,
+		Parent: parent,
+		Dirs:   dirs,
+		IsRoot: s.isRootPreset(path),
+	})
+}
+
+type mkdirRequest struct {
+	Path string `json:"path"`
+}
+
+type mkdirResponse struct {
+	OK   bool   `json:"ok"`
+	Path string `json:"path"`
+}
+
+func (s *Server) handleBrowseMkdir(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req mkdirRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeErr(w, http.StatusRequestEntityTooLarge, errors.New("request body too large"))
+			return
+		}
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if req.Path == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("path required"))
+		return
+	}
+
+	// Validate path is under an allowed root
+	if !s.isAllowedPath(req.Path) {
+		writeErr(w, http.StatusForbidden, errors.New("path not allowed"))
+		return
+	}
+
+	// Create directory
+	if err := os.MkdirAll(req.Path, 0755); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	log.Printf("action=mkdir path=%s", req.Path)
+	writeJSON(w, http.StatusOK, mkdirResponse{
+		OK:   true,
+		Path: req.Path,
+	})
+}
+
+// isAllowedPath checks if the path is under one of the allowed root directories
+func (s *Server) isAllowedPath(path string) bool {
+	if s.Meta == nil || len(s.Meta.OutDirPresets) == 0 {
+		return false
+	}
+
+	cleanPath := filepath.Clean(path)
+	for _, root := range s.Meta.OutDirPresets {
+		cleanRoot := filepath.Clean(root)
+		if cleanPath == cleanRoot || strings.HasPrefix(cleanPath, cleanRoot+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// isRootPreset checks if the path is one of the root presets
+func (s *Server) isRootPreset(path string) bool {
+	if s.Meta == nil || len(s.Meta.OutDirPresets) == 0 {
+		return false
+	}
+
+	cleanPath := filepath.Clean(path)
+	for _, root := range s.Meta.OutDirPresets {
+		if cleanPath == filepath.Clean(root) {
+			return true
+		}
+	}
+	return false
 }
 
 func writeJSON(w http.ResponseWriter, code int, v interface{}) {
