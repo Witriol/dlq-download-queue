@@ -14,6 +14,6 @@ COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 VOLUME ["/data", "/state"]
 ENV DLQ_STATE_DIR=/state
-ENV DLQ_HTTP_ADDR=127.0.0.1:8080
+ENV DLQ_HTTP_PORT=8099
 ENV ARIA2_RPC=http://127.0.0.1:6800/jsonrpc
 ENTRYPOINT ["/entrypoint.sh"]

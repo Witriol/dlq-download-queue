@@ -14,12 +14,12 @@ npm run dev
 
 The UI proxies requests to the DLQ API via server routes.
 
-- `DLQ_API` or `DLQ_API_BASE` (default `http://127.0.0.1:8080`)
+- `DLQ_API` or `DLQ_API_BASE` (fallback `http://127.0.0.1:8099`)
 
 Example:
 
 ```bash
-DLQ_API=http://127.0.0.1:8080 npm run dev
+DLQ_API=http://127.0.0.1:8099 npm run dev
 ```
 
 ## Authelia (later)

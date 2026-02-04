@@ -21,7 +21,7 @@ func main() {
 	log.Printf("dlqd %s starting", versionString())
 	stateDir := getenv("DLQ_STATE_DIR", "/state")
 	dbPath := getenv("DLQ_DB", stateDir+"/dlq.db")
-	listen := getenv("DLQ_HTTP_ADDR", "0.0.0.0:8080")
+	listen := httpListenAddr()
 	aria2RPC := getenv("ARIA2_RPC", "http://127.0.0.1:6800/jsonrpc")
 	aria2Secret := getenv("ARIA2_SECRET", "")
 	outDirPresets := outDirPresetsFromEnv()
@@ -98,6 +98,21 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func httpListenAddr() string {
+	if v := os.Getenv("DLQ_HTTP_ADDR"); v != "" {
+		return v
+	}
+	host := os.Getenv("DLQ_HTTP_HOST")
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	port := os.Getenv("DLQ_HTTP_PORT")
+	if port == "" {
+		port = "8099"
+	}
+	return host + ":" + port
 }
 
 func outDirPresetsFromEnv() []string {

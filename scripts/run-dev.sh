@@ -37,9 +37,27 @@ if [ "${#DATA_VOLUMES[@]}" -eq 0 ]; then
 fi
 
 STATE_MOUNT="${STATE_MOUNT:-/tmp/dlq-state:/state}"
+# Keep in sync with scripts/deploy-unraid.sh
 DLQ_HTTP_HOST="${DLQ_HTTP_HOST:-0.0.0.0}"
-DLQ_HTTP_PORT="${DLQ_HTTP_PORT:-8080}"
-DLQ_HTTP_ADDR="${DLQ_HTTP_ADDR:-${DLQ_HTTP_HOST}:${DLQ_HTTP_PORT}}"
+DLQ_HTTP_PORT="${DLQ_HTTP_PORT:-}"
+if [[ -n "${DLQ_HTTP_ADDR:-}" ]]; then
+  case "${DLQ_HTTP_ADDR}" in
+    *:*) ;;
+    *)
+      echo "ERROR: DLQ_HTTP_ADDR must include a port (e.g., 0.0.0.0:8099)" >&2
+      exit 1
+      ;;
+  esac
+  DLQ_HTTP_ADDR_PORT="${DLQ_HTTP_ADDR##*:}"
+  if [[ -n "${DLQ_HTTP_PORT}" && "${DLQ_HTTP_PORT}" != "${DLQ_HTTP_ADDR_PORT}" ]]; then
+    echo "ERROR: DLQ_HTTP_PORT (${DLQ_HTTP_PORT}) must match DLQ_HTTP_ADDR (${DLQ_HTTP_ADDR})" >&2
+    exit 1
+  fi
+  DLQ_HTTP_PORT="${DLQ_HTTP_ADDR_PORT}"
+else
+  DLQ_HTTP_PORT="${DLQ_HTTP_PORT:-8099}"
+  DLQ_HTTP_ADDR="${DLQ_HTTP_HOST}:${DLQ_HTTP_PORT}"
+fi
 
 LOG_DOCKER_PID=""
 LOG_UI_PID=""
@@ -63,6 +81,7 @@ docker run -d --name dlq \
   -v "${STATE_MOUNT}" \
   "${DATA_ENVS[@]}" \
   -e DLQ_HTTP_ADDR="${DLQ_HTTP_ADDR}" \
+  -e DLQ_HTTP_PORT="${DLQ_HTTP_PORT}" \
   -e PUID="${PUID}" \
   -e PGID="${PGID}" \
   -p "${DLQ_HTTP_PORT}:${DLQ_HTTP_PORT}" \

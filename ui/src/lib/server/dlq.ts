@@ -1,10 +1,13 @@
 import { env } from '$env/dynamic/private';
 
-const DEFAULT_BASE = 'http://127.0.0.1:8080';
+const DEFAULT_BASE = 'http://127.0.0.1:8099';
 
 function apiBase(): string {
   const raw = env.DLQ_API_BASE || env.DLQ_API;
-  return (raw || DEFAULT_BASE).replace(/\/+$/, '');
+  if (raw) {
+    return raw.replace(/\/+$/, '');
+  }
+  return DEFAULT_BASE;
 }
 
 export function dlqURL(path: string): string {

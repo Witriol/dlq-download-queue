@@ -1,0 +1,42 @@
+# Docker Compose example (self-contained; no .env needed).
+# Copy to docker-compose.yml and edit paths/ports as needed.
+
+services:
+  dlq:
+    image: dlq:latest
+    # build: .
+    container_name: dlq
+    restart: unless-stopped
+    ports:
+      - "8099:8099" # host:container (keep in sync with DLQ_HTTP_PORT)
+    volumes:
+      - /path/to/tvshows:/data/tvshows # example DATA_TVSHOWS
+      - /path/to/movies:/data/movies   # example DATA_MOVIES
+      - /path/to/state:/state          # DLQ_STATE_DIR
+    environment:
+      - DLQ_HTTP_PORT=8099
+      - DLQ_STATE_DIR=/state
+      - DLQ_DB=/state/dlq.db
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - ARIA2_RPC=http://127.0.0.1:6800/jsonrpc
+      # Pass DATA_* through so presets appear in the UI/API.
+      - DATA_TVSHOWS=/path/to/tvshows:/data/tvshows
+      - DATA_MOVIES=/path/to/movies:/data/movies
+
+  dlq-webui:
+    image: dlq-webui:latest
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile.webui
+    container_name: dlq-webui
+    restart: unless-stopped
+    depends_on:
+      - dlq
+    ports:
+      - "8098:8098" # host:container (keep in sync with PORT)
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8098
+      - DLQ_API=http://dlq:8099 # must match dlq container port

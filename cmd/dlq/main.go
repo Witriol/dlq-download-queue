@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const defaultAPI = "http://127.0.0.1:8080"
+const defaultAPI = "http://127.0.0.1:8099"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -77,7 +77,7 @@ func usage() {
 	fmt.Println("  dlq settings [--concurrency <1-10>]")
 	fmt.Println("")
 	fmt.Println("Env:")
-	fmt.Println("  DLQ_API=http://127.0.0.1:8080")
+	fmt.Println("  DLQ_API=http://127.0.0.1:8099")
 }
 
 func apiBase() string {

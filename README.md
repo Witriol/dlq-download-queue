@@ -25,7 +25,7 @@ Check status:
 docker exec -it dlq dlq status
 ```
 
-To access the HTTP API from the host, add `-p 8099:8099` and set `-e DLQ_HTTP_ADDR=0.0.0.0:8099` (or set `DLQ_HTTP_HOST`/`DLQ_HTTP_PORT` in `.env` when using compose/dev scripts).
+To access the HTTP API from the host, publish the port (e.g., `-p 8099:8099`). If you change the port, set `DLQ_HTTP_PORT` to match.
 
 ## CLI
 
@@ -48,6 +48,7 @@ To access the HTTP API from the host, add `-p 8099:8099` and set `-e DLQ_HTTP_AD
 ## UI (SvelteKit)
 
 The UI is optional and lives under `ui/`. It proxies the DLQ HTTP API server-side.
+The Unraid deploy script runs the UI as a separate container (`dlq-webui`) on `DLQ_WEBUI_PORT` (default `8098`).
 
 ```
 cd ui
@@ -69,8 +70,11 @@ Presets for out_dir are served from `GET /meta` and derived from `DATA_*` volume
 
 - `DLQ_STATE_DIR` (default `/state`)
 - `DLQ_DB` (default `/state/dlq.db`)
-- `DLQ_HTTP_ADDR` (default `0.0.0.0:8099`)
-- `DLQ_HTTP_HOST` / `DLQ_HTTP_PORT` (used by compose/dev scripts to derive `DLQ_HTTP_ADDR`)
+- `DLQ_HTTP_PORT` (default `8099`)
+- `DLQ_HTTP_HOST` (default `0.0.0.0`)
+- `DLQ_HTTP_ADDR` (optional explicit host:port override; takes precedence if set)
+- `DLQ_API` (client base URL for CLI/UI, e.g. `http://127.0.0.1:8099`)
+- `DLQ_WEBUI_PORT` (default `8098`, used by the web UI container)
 - `PUID` / `PGID` (optional; if set, dlqd + aria2 run as that user)
 - `ARIA2_RPC` (default `http://127.0.0.1:6800/jsonrpc`)
 - `ARIA2_RPC_LISTEN_PORT` (default parsed from `ARIA2_RPC`, fallback `6800`)
@@ -99,12 +103,14 @@ All job `out_dir` values must live under one of the `DATA_*` container paths.
 ## Docker Compose
 
 ```bash
-# Copy .env.example to .env and edit it
-cp .env.example .env
+# Copy the example compose file and edit paths/ports
+cp docker-compose.example.yml docker-compose.yml
 
 # Start the service
 docker-compose up -d
 ```
+
+Note: keep the API port consistent across `DLQ_HTTP_PORT`, the `ports` mapping, and the web UI `DLQ_API` value.
 
 ## Deploy to Unraid
 
@@ -112,17 +118,22 @@ docker-compose up -d
 # Copy .env.example to .env and edit it
 cp .env.example .env
 
-# Build and transfer image only
-scripts/deploy-unraid.sh
+# Build, transfer, and deploy containers
+scripts/deploy-unraid.sh all
 
-# Build, transfer, and deploy container
-scripts/deploy-unraid.sh --deploy
+# Deploy only the CLI/API container
+scripts/deploy-unraid.sh cli
+
+# Deploy only the web UI container
+scripts/deploy-unraid.sh webui
 ```
 
 The `.env` file is your single source of truth for deployment configuration:
 - `REMOTE_HOST` - SSH alias for your Unraid server
 - `DATA_*` - Volume mappings (e.g., `DATA_TVSHOWS=/mnt/user/tvshows:/data/tvshows`)
 - `STATE_MOUNT` - State/config volume mapping
+- `DLQ_HTTP_PORT` - Port for the DLQ API container
+- `DLQ_WEBUI_PORT` - Port for the web UI container
 - `PUID`/`PGID`/`TZ` - Runtime user and timezone settings
 
 The deploy script automatically discovers all `DATA_*` variables and passes them through so presets can be derived in the app.
@@ -157,9 +168,9 @@ Add this to your `~/.zshrc` (or `~/.bashrc`) to run the CLI on Unraid via SSH:
 ```
 dlq() {
   if [ -t 0 ]; then
-    ssh -t HOMENAS "docker exec -it dlq dlq $(printf '%q ' "$@")"
+    ssh -t my-server "docker exec -it dlq dlq $(printf '%q ' "$@")"
   else
-    ssh HOMENAS "docker exec -i dlq dlq $(printf '%q ' "$@")"
+    ssh my-server "docker exec -i dlq dlq $(printf '%q ' "$@")"
   fi
 }
 ```
