@@ -5,7 +5,7 @@
 <script>
   import { onMount } from 'svelte';
   import { addJobsBatch, browse, clearJobs, getEvents, getMeta, getSettings, listJobs, mkdir, postAction, updateSettings } from '$lib/api';
-  import { filePath, formatETA, formatProgress, formatSpeed } from '$lib/format';
+  import { fileName, folderPath, formatETA, formatProgress, formatSpeed, humanBytes } from '$lib/format';
 
   const statusOptions = ['', 'queued', 'resolving', 'downloading', 'paused', 'completed', 'failed', 'deleted'];
 
@@ -30,6 +30,7 @@
   let addError = '';
   let outDirPresets = [];
   let metaError = '';
+  let metaVersion = '';
   let outDirPlaceholder = 'Select a preset or type a path';
 
   let showLogs = false;
@@ -114,6 +115,11 @@
 
   $: counts = countsFor(jobs);
   $: activeCount = counts.queued + counts.resolving + counts.downloading + counts.paused;
+  $: totalSpeed = jobs.reduce((sum, job) => {
+    if (job.status !== 'downloading') return sum;
+    return sum + (job.download_speed ?? 0);
+  }, 0);
+  $: totalSpeedLabel = totalSpeed > 0 ? `${humanBytes(totalSpeed)}/s` : '-';
 
   async function refresh() {
     lastError = '';
@@ -159,6 +165,8 @@
         return job.id;
       case 'status':
         return job.status;
+      case 'name':
+        return fileName(job);
       case 'progress': {
         const total = job.size_bytes ?? 0;
         const done = job.bytes_done ?? 0;
@@ -170,7 +178,7 @@
       case 'eta':
         return job.eta_seconds ?? 0;
       case 'path':
-        return filePath(job);
+        return folderPath(job);
       case 'url':
         return job.url || '';
       default:
@@ -254,9 +262,11 @@
     try {
       const meta = await getMeta();
       outDirPresets = Array.isArray(meta.out_dir_presets) ? meta.out_dir_presets : [];
+      metaVersion = typeof meta.version === 'string' ? meta.version : '';
     } catch (err) {
       metaError = err instanceof Error ? err.message : String(err);
       outDirPresets = [];
+      metaVersion = '';
     }
   }
 
@@ -404,11 +414,15 @@
 <div class="page">
   <header class="header">
     <div class="brand">
-      <h1>DLQ Control Deck</h1>
+      <div class="brand-title">
+        <h1>DLQ Control Deck</h1>
+        {#if metaVersion}
+          <span class="badge badge-version">{metaVersion}</span>
+        {/if}
+      </div>
     </div>
     <div class="toolbar">
       <button class="btn ghost" on:click={openSettings}>Settings</button>
-      <button class="btn danger" on:click={() => (showClearConfirm = true)}>Clear All</button>
     </div>
   </header>
 
@@ -429,6 +443,10 @@
       <span>Failed</span>
       <strong>{counts.failed}</strong>
     </div>
+    <div class="stat stat-speed">
+      <span>Total Speed</span>
+      <strong>{totalSpeedLabel}</strong>
+    </div>
   </div>
 
   {#if lastError}
@@ -436,75 +454,93 @@
   {/if}
 
   <section class="panel">
-    <div class="toolbar" style="margin-bottom: 12px;">
-      <select bind:value={statusFilter} on:change={refresh}>
-        {#each statusOptions as status}
-          <option value={status}>{status || 'all statuses'}</option>
-        {/each}
-      </select>
-      <label class="small">
-        <input type="checkbox" bind:checked={includeDeleted} on:change={refresh} /> include deleted
-      </label>
-      <label class="small">
-        <input type="checkbox" bind:checked={autoRefresh} /> auto refresh
-      </label>
-      <label class="small">
-        every
-        <input type="number" min="1" max="60" style="width: 64px" bind:value={refreshInterval} />
-        s
-      </label>
+    <div class="toolbar table-toolbar" style="margin-bottom: 12px;">
+      <div class="toolbar-group">
+        <select bind:value={statusFilter} on:change={refresh}>
+          {#each statusOptions as status}
+            <option value={status}>{status || 'all statuses'}</option>
+          {/each}
+        </select>
+        <label class="small">
+          <input type="checkbox" bind:checked={includeDeleted} on:change={refresh} /> include deleted
+        </label>
+        <label class="small">
+          <input type="checkbox" bind:checked={autoRefresh} /> auto refresh
+        </label>
+        <label class="small">
+          every
+          <input type="number" min="1" max="60" style="width: 64px" bind:value={refreshInterval} />
+          s
+        </label>
+      </div>
+      <button class="btn danger tiny" on:click={() => (showClearConfirm = true)}>Clear completed</button>
     </div>
 
     {#if jobs.length === 0}
       <p class="notice">No jobs yet. Add URLs to start the queue.</p>
     {:else}
-      <table class="table">
-        <thead>
-          <tr>
-            <th><button class="sort" on:click={() => toggleSort('id')}>ID{sortIndicator('id')}</button></th>
-            <th><button class="sort" on:click={() => toggleSort('status')}>Status{sortIndicator('status')}</button></th>
-            <th><button class="sort" on:click={() => toggleSort('progress')}>Progress{sortIndicator('progress')}</button></th>
-            <th><button class="sort" on:click={() => toggleSort('speed')}>Speed{sortIndicator('speed')}</button></th>
-            <th><button class="sort" on:click={() => toggleSort('eta')}>ETA{sortIndicator('eta')}</button></th>
-            <th><button class="sort" on:click={() => toggleSort('path')}>Path{sortIndicator('path')}</button></th>
-            <th><button class="sort" on:click={() => toggleSort('url')}>URL{sortIndicator('url')}</button></th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each sortedJobs as job}
+      <div class="table-wrap">
+        <table class="table">
+          <colgroup>
+            <col class="col-id" />
+            <col class="col-status" />
+            <col class="col-name" />
+            <col class="col-progress" />
+            <col class="col-speed" />
+            <col class="col-eta" />
+            <col class="col-path" />
+            <col class="col-url" />
+            <col class="col-actions" />
+          </colgroup>
+          <thead>
             <tr>
-              <td>{job.id}</td>
-              <td><span class="status" data-status={job.status}>{job.status}</span></td>
-              <td>{formatProgress(job)}</td>
-              <td>{formatSpeed(job)}</td>
-              <td>{formatETA(job)}</td>
-              <td>{filePath(job)}</td>
-              <td>
-                <div>{job.url}</div>
-                {#if job.error_code}
-                  <div class="badge">error: {job.error_code} {job.error}</div>
-                {/if}
-              </td>
-              <td>
-                <div class="actions">
-                  {#if job.status === 'downloading'}
-                    <button class="btn" on:click={() => handleAction(job.id, 'pause')}>Pause</button>
-                  {/if}
-                  {#if job.status === 'paused'}
-                    <button class="btn" on:click={() => handleAction(job.id, 'resume')}>Resume</button>
-                  {/if}
-                  {#if job.status === 'failed'}
-                    <button class="btn" on:click={() => handleAction(job.id, 'retry')}>Retry</button>
-                  {/if}
-                  <button class="btn ghost" on:click={() => openLogs(job)}>Logs</button>
-                  <button class="btn ghost" on:click={() => handleAction(job.id, 'remove')}>Remove</button>
-                </div>
-              </td>
+              <th><button class="sort" on:click={() => toggleSort('id')}>ID{sortIndicator('id')}</button></th>
+              <th><button class="sort" on:click={() => toggleSort('status')}>Status{sortIndicator('status')}</button></th>
+              <th><button class="sort" on:click={() => toggleSort('name')}>Name{sortIndicator('name')}</button></th>
+              <th><button class="sort" on:click={() => toggleSort('progress')}>Progress{sortIndicator('progress')}</button></th>
+              <th><button class="sort" on:click={() => toggleSort('speed')}>Speed{sortIndicator('speed')}</button></th>
+              <th><button class="sort" on:click={() => toggleSort('eta')}>ETA{sortIndicator('eta')}</button></th>
+              <th><button class="sort" on:click={() => toggleSort('path')}>Path{sortIndicator('path')}</button></th>
+              <th><button class="sort" on:click={() => toggleSort('url')}>URL{sortIndicator('url')}</button></th>
+              <th>Actions</th>
             </tr>
-          {/each}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {#each sortedJobs as job}
+              <tr>
+                <td>{job.id}</td>
+                <td><span class="status" data-status={job.status}>{job.status}</span></td>
+                <td class="cell-name">{fileName(job)}</td>
+                <td>{formatProgress(job)}</td>
+                <td>{formatSpeed(job)}</td>
+                <td>{formatETA(job)}</td>
+                <td class="cell-path">{folderPath(job)}</td>
+                <td class="cell-url">
+                  <div>{job.url}</div>
+                  {#if job.error_code}
+                    <div class="badge">error: {job.error_code} {job.error}</div>
+                  {/if}
+                </td>
+                <td>
+                  <div class="actions">
+                    {#if job.status === 'downloading'}
+                      <button class="btn" on:click={() => handleAction(job.id, 'pause')}>Pause</button>
+                    {/if}
+                    {#if job.status === 'paused'}
+                      <button class="btn" on:click={() => handleAction(job.id, 'resume')}>Resume</button>
+                    {/if}
+                    {#if job.status === 'failed'}
+                      <button class="btn" on:click={() => handleAction(job.id, 'retry')}>Retry</button>
+                    {/if}
+                    <button class="btn ghost" on:click={() => openLogs(job)}>Logs</button>
+                    <button class="btn ghost" on:click={() => handleAction(job.id, 'remove')}>Remove</button>
+                  </div>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
     {/if}
   </section>
 </div>
@@ -631,13 +667,13 @@
   <div class="modal panel" role="dialog" aria-modal="true">
     <div class="modal-header">
       <div>
-        <h2 style="margin: 0;">Clear All Jobs</h2>
-        <p class="notice">This will delete all jobs and events. This cannot be undone.</p>
+        <h2 style="margin: 0;">Clear Completed Jobs</h2>
+        <p class="notice">This will mark completed jobs as deleted. This cannot be undone.</p>
       </div>
       <button class="btn ghost" on:click={() => (showClearConfirm = false)}>Close</button>
     </div>
     <div class="actions">
-      <button class="btn danger" on:click={confirmClear}>Yes, clear all</button>
+      <button class="btn danger" on:click={confirmClear}>Yes, clear completed</button>
       <button class="btn ghost" on:click={() => (showClearConfirm = false)}>Cancel</button>
     </div>
   </div>

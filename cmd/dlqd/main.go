@@ -65,7 +65,7 @@ func main() {
 
 	server := &api.Server{
 		Queue:    service,
-		Meta:     &api.Meta{OutDirPresets: outDirPresets},
+		Meta:     &api.Meta{OutDirPresets: outDirPresets, Version: versionString()},
 		Settings: settings,
 	}
 	ln, err := net.Listen("tcp", listen)

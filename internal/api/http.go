@@ -25,6 +25,7 @@ type Queue interface {
 	Retry(ctx context.Context, id int64) error
 	Remove(ctx context.Context, id int64) error
 	Clear(ctx context.Context) error
+	Purge(ctx context.Context) error
 	Pause(ctx context.Context, id int64) error
 	Resume(ctx context.Context, id int64) error
 }
@@ -42,6 +43,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/meta", s.handleMeta)
 	mux.HandleFunc("/jobs", s.handleJobs)
 	mux.HandleFunc("/jobs/clear", s.handleJobsClear)
+	mux.HandleFunc("/jobs/purge", s.handleJobsPurge)
 	mux.HandleFunc("/jobs/", s.handleJob)
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/browse/mkdir", s.handleBrowseMkdir)
@@ -51,6 +53,7 @@ func (s *Server) Handler() http.Handler {
 
 type Meta struct {
 	OutDirPresets []string `json:"out_dir_presets"`
+	Version       string   `json:"version,omitempty"`
 }
 
 func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
@@ -214,7 +217,20 @@ func (s *Server) handleJobsClear(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	log.Printf("action=clear")
+	log.Printf("action=clear_completed")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleJobsPurge(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if err := s.Queue.Purge(r.Context()); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	log.Printf("action=purge")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

@@ -40,6 +40,25 @@ export function filePath(job: JobView): string {
   return `${job.out_dir.replace(/\/$/, '')}/${name}`;
 }
 
+export function fileName(job: JobView): string {
+  const name = job.filename || job.name || shortURL(job.url);
+  if (!name) {
+    return '-';
+  }
+  return name;
+}
+
+export function folderPath(job: JobView): string {
+  const outDir = job.out_dir || '';
+  if (!outDir || outDir === '/') {
+    return outDir || '';
+  }
+  if (outDir.endsWith('/')) {
+    return outDir;
+  }
+  return `${outDir}/`;
+}
+
 export function formatProgress(job: JobView): string {
   const total = job.size_bytes ?? 0;
   let done = job.bytes_done ?? 0;

@@ -34,4 +34,5 @@ export type BatchResult = {
 
 export type Meta = {
   out_dir_presets: string[];
+  version?: string;
 };

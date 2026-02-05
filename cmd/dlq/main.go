@@ -39,6 +39,8 @@ func main() {
 		cmdRemove(os.Args[2:])
 	case "clear":
 		cmdClear(os.Args[2:])
+	case "purge":
+		cmdPurge(os.Args[2:])
 	case "pause":
 		cmdPause(os.Args[2:])
 	case "resume":
@@ -73,7 +75,8 @@ func usage() {
 	fmt.Println("  dlq pause <job_id>")
 	fmt.Println("  dlq resume <job_id>")
 	fmt.Println("  dlq remove <job_id>")
-	fmt.Println("  dlq clear")
+	fmt.Println("  dlq clear      (clear completed jobs)")
+	fmt.Println("  dlq purge      (delete all jobs and events)")
 	fmt.Println("  dlq settings [--concurrency <1-10>]")
 	fmt.Println("")
 	fmt.Println("Env:")
@@ -353,6 +356,17 @@ func cmdClear(args []string) {
 	api := fs.String("api", apiBase(), "api base URL")
 	fs.Parse(args)
 	if err := postJSON(*api+"/jobs/clear", map[string]any{}, nil); err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fmt.Println("ok")
+}
+
+func cmdPurge(args []string) {
+	fs := flag.NewFlagSet("purge", flag.ExitOnError)
+	api := fs.String("api", apiBase(), "api base URL")
+	fs.Parse(args)
+	if err := postJSON(*api+"/jobs/purge", map[string]any{}, nil); err != nil {
 		fmt.Println("error:", err)
 		return
 	}

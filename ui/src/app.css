@@ -65,6 +65,12 @@ textarea {
   gap: 6px;
 }
 
+.brand-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .brand h1 {
   margin: 0;
   font-size: 28px;
@@ -82,6 +88,41 @@ textarea {
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
+}
+
+.table-toolbar {
+  width: 100%;
+  justify-content: space-between;
+}
+
+.toolbar-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.toolbar select,
+.toolbar input[type="number"] {
+  border-radius: 12px;
+  border: 1px solid rgba(231, 237, 244, 0.18);
+  background: rgba(18, 24, 34, 0.8);
+}
+
+.toolbar select {
+  padding: 8px 12px;
+  padding-right: 38px;
+}
+
+.toolbar input[type="number"] {
+  padding: 8px 12px;
+}
+
+.toolbar select:focus,
+.toolbar input[type="number"]:focus {
+  outline: none;
+  border-color: rgba(20, 184, 166, 0.6);
+  box-shadow: 0 0 0 2px rgba(20, 184, 166, 0.2);
 }
 
 .panel {
@@ -108,7 +149,7 @@ textarea {
 
 .stats {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 12px;
   margin-bottom: 16px;
 }
@@ -161,6 +202,11 @@ textarea {
   box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.2);
 }
 
+.stat-speed {
+  border-color: rgba(20, 184, 166, 0.55);
+  box-shadow: 0 0 0 1px rgba(20, 184, 166, 0.2);
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;
@@ -174,6 +220,11 @@ textarea {
   padding: 6px 14px;
   cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.15s ease, border 0.15s ease;
+}
+
+.btn.tiny {
+  padding: 4px 10px;
+  font-size: 12px;
 }
 
 .btn:hover {
@@ -198,10 +249,17 @@ textarea {
   border-color: transparent;
 }
 
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
 .table {
   width: 100%;
   border-collapse: collapse;
   font-size: 14px;
+  table-layout: fixed;
+  min-width: 1520px;
 }
 
 .table th,
@@ -210,6 +268,8 @@ textarea {
   padding: 10px 8px;
   border-bottom: 1px solid var(--line);
   vertical-align: top;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .table th {
@@ -217,6 +277,23 @@ textarea {
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+
+.table col.col-id { width: 70px; }
+.table col.col-status { width: 120px; }
+.table col.col-name { width: 200px; }
+.table col.col-progress { width: 170px; }
+.table col.col-speed { width: 110px; }
+.table col.col-eta { width: 90px; }
+.table col.col-path { width: 220px; }
+.table col.col-url { width: 320px; }
+.table col.col-actions { width: 220px; }
+
+.table .cell-url,
+.table .cell-path,
+.table .cell-name {
+  white-space: normal;
+  word-break: break-word;
 }
 
 .sort {
@@ -337,6 +414,16 @@ input[type="checkbox"]:checked::before {
 .badge {
   font-size: 12px;
   color: var(--muted);
+}
+
+.badge.badge-version {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(148, 163, 184, 0.12);
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .presets-row {

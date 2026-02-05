@@ -359,6 +359,15 @@ WHERE id = ?
 	return err
 }
 
+func (s *Store) ClearCompleted(ctx context.Context) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx, `
+UPDATE jobs SET status = ?, deleted_at = ?, updated_at = ?
+WHERE status = ?
+`, StatusDeleted, now, now, StatusCompleted)
+	return err
+}
+
 func (s *Store) ClearAll(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

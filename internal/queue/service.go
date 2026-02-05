@@ -102,6 +102,10 @@ func (s *Service) Remove(ctx context.Context, id int64) error {
 }
 
 func (s *Service) Clear(ctx context.Context) error {
+	return s.store.ClearCompleted(ctx)
+}
+
+func (s *Service) Purge(ctx context.Context) error {
 	return s.store.ClearAll(ctx)
 }
 
@@ -215,6 +219,7 @@ var _ interface {
 	Retry(context.Context, int64) error
 	Remove(context.Context, int64) error
 	Clear(context.Context) error
+	Purge(context.Context) error
 	Pause(context.Context, int64) error
 	Resume(context.Context, int64) error
 } = (*Service)(nil)
