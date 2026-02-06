@@ -1,0 +1,101 @@
+<script>
+  export let show = false;
+  export let addOutDir = '';
+  export let addUrlsText = '';
+  export let outDirPlaceholder = 'Select a preset or type a path';
+  export let outDirPresets = [];
+  export let parsedUrlCount = 0;
+  export let adding = false;
+  export let addError = '';
+  export let metaError = '';
+  export let addErrors = [];
+
+  export let onClose = () => {};
+  export let onOpenBrowser = () => {};
+  export let onHandleFiles = () => {};
+  export let onClearUrls = () => {};
+  export let onSubmit = () => {};
+
+  function onBackdropKeydown(event) {
+    if (event.key === 'Enter' || event.key === ' ' || event.key === 'Escape') {
+      event.preventDefault();
+      onClose();
+    }
+  }
+</script>
+
+{#if show}
+  <div
+    class="modal-backdrop"
+    role="button"
+    tabindex="0"
+    aria-label="Close dialog"
+    on:click={onClose}
+    on:keydown={onBackdropKeydown}
+  ></div>
+  <div class="modal panel modal-wide" role="dialog" aria-modal="true">
+    <div class="modal-header">
+      <div>
+        <h2 style="margin: 0;">Add Jobs</h2>
+        <p class="notice">Auto-detects site per URL; unsupported URLs will be marked.</p>
+      </div>
+      <button class="btn ghost" on:click={onClose}>Close</button>
+    </div>
+    <div class="form-grid">
+      <div>
+        <label for="add-out-dir">Out Directory</label>
+        <div class="actions">
+          <input id="add-out-dir" type="text" placeholder={outDirPlaceholder} bind:value={addOutDir} style="flex: 1;" />
+          <button class="btn ghost" type="button" on:click={onOpenBrowser}>Browse</button>
+        </div>
+      </div>
+      <div class="presets-row">
+        <span class="presets-label">Presets</span>
+        {#if outDirPresets.length === 0}
+          <span class="presets-empty">No presets available.</span>
+        {:else}
+          <div class="presets-list">
+            {#each outDirPresets as preset}
+              <button class="preset-btn" type="button" on:click={() => (addOutDir = preset)}>{preset}</button>
+            {/each}
+          </div>
+        {/if}
+      </div>
+      <div>
+        <label for="add-urls">URLs</label>
+        <textarea id="add-urls" bind:value={addUrlsText} placeholder="https://...\nhttps://..."></textarea>
+      </div>
+      <div class="badge">
+        URLs: {parsedUrlCount}
+      </div>
+      <div class="actions">
+        <label class="btn ghost">
+          Import file(s)
+          <input type="file" multiple accept=".txt" style="display: none" on:change={onHandleFiles} />
+        </label>
+        <button class="btn ghost" type="button" on:click={onClearUrls}>Clear</button>
+        <button class="btn primary" type="button" on:click={onSubmit} disabled={adding}>
+          {adding ? 'Adding...' : 'Add Jobs'}
+        </button>
+      </div>
+    </div>
+
+    {#if addError}
+      <p class="notice">{addError}</p>
+    {/if}
+    {#if metaError}
+      <p class="notice">Presets: {metaError}</p>
+    {/if}
+
+    {#if addErrors.length > 0}
+      <div class="divider"></div>
+      <div class="result-list">
+        {#each addErrors as result}
+          <div class="result-item">
+            [ERR] {result.url} -> {result.error}
+          </div>
+        {/each}
+      </div>
+    {/if}
+  </div>
+{/if}
