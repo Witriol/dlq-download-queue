@@ -146,8 +146,22 @@ dlq --version
 
 ## Testing
 
-```
-go test ./internal/queue
+Use this single flow for local verification:
+
+```bash
+# 1) Ensure Docker is running
+docker info
+
+# 2) Prepare local dev env file (needed by script integration test)
+cp -n .env.example .env.dev
+
+# 3) Run all Go tests (unit + integration), verbose and without cache
+go test -v -count=1 ./...
+
+# 4) Verify web UI build
+cd ui
+npm install
+npm run build
 ```
 
 ## Development

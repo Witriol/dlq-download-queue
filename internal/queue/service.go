@@ -3,13 +3,21 @@ package queue
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
-	"strings"
+
+	downloadclient "github.com/Witriol/my-downloader/internal/downloader"
+)
+
+var (
+	ErrDownloaderNotConfigured = errors.New("downloader_not_configured")
+	ErrMissingEngineGID        = errors.New("missing_engine_gid")
+	ErrActionNotAllowed        = errors.New("action_not_allowed")
 )
 
 type Service struct {
-	store         *Store
-	downloader    Downloader
+	store        *Store
+	downloader   Downloader
 	allowedRoots []string
 }
 
@@ -111,16 +119,19 @@ func (s *Service) Purge(ctx context.Context) error {
 
 func (s *Service) Pause(ctx context.Context, id int64) error {
 	if s.downloader == nil {
-		return errors.New("downloader_not_configured")
+		return ErrDownloaderNotConfigured
 	}
 	job, err := s.store.GetJob(ctx, id)
 	if err != nil {
 		return err
 	}
 	if !job.EngineGID.Valid {
-		return errors.New("missing_engine_gid")
+		return ErrMissingEngineGID
 	}
 	if err := s.downloader.Pause(ctx, job.EngineGID.String); err != nil {
+		if errors.Is(err, downloadclient.ErrActionNotAllowed) {
+			return fmt.Errorf("%w: %v", ErrActionNotAllowed, err)
+		}
 		return err
 	}
 	if err := s.store.MarkPaused(ctx, id); err != nil {
@@ -131,7 +142,7 @@ func (s *Service) Pause(ctx context.Context, id int64) error {
 
 func (s *Service) Resume(ctx context.Context, id int64) error {
 	if s.downloader == nil {
-		return errors.New("downloader_not_configured")
+		return ErrDownloaderNotConfigured
 	}
 	job, err := s.store.GetJob(ctx, id)
 	if err != nil {
@@ -144,12 +155,14 @@ func (s *Service) Resume(ctx context.Context, id int64) error {
 		return s.store.AddEvent(ctx, id, "info", "resume requeued")
 	}
 	if err := s.downloader.Unpause(ctx, job.EngineGID.String); err != nil {
-		msg := err.Error()
-		if strings.Contains(msg, "not found") || strings.Contains(msg, "status") {
+		if errors.Is(err, downloadclient.ErrGIDNotFound) {
 			if err := s.store.Requeue(ctx, id); err != nil {
 				return err
 			}
 			return s.store.AddEvent(ctx, id, "info", "resume requeued")
+		}
+		if errors.Is(err, downloadclient.ErrActionNotAllowed) {
+			return fmt.Errorf("%w: %v", ErrActionNotAllowed, err)
 		}
 		return err
 	}
@@ -223,5 +236,3 @@ var _ interface {
 	Pause(context.Context, int64) error
 	Resume(context.Context, int64) error
 } = (*Service)(nil)
-
-// Ensure unused import check for sql if used by interface.

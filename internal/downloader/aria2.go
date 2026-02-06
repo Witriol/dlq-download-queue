@@ -7,8 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
+
+var ErrGIDNotFound = errors.New("aria2_gid_not_found")
+var ErrActionNotAllowed = errors.New("aria2_action_not_allowed")
 
 type Aria2Client struct {
 	Endpoint string
@@ -65,7 +69,14 @@ func (a *Aria2Client) call(ctx context.Context, method string, params []interfac
 		return err
 	}
 	if rpcResp.Error != nil {
-		return fmt.Errorf("aria2_rpc_error:%d:%s", rpcResp.Error.Code, rpcResp.Error.Message)
+		baseErr := fmt.Errorf("aria2_rpc_error:%d:%s", rpcResp.Error.Code, rpcResp.Error.Message)
+		if isGIDNotFoundMessage(rpcResp.Error.Message) {
+			return fmt.Errorf("%w: %v", ErrGIDNotFound, baseErr)
+		}
+		if isActionNotAllowedMessage(rpcResp.Error.Message) {
+			return fmt.Errorf("%w: %v", ErrActionNotAllowed, baseErr)
+		}
+		return baseErr
 	}
 	if out == nil {
 		return nil
@@ -144,4 +155,24 @@ func (a *Aria2Client) Unpause(ctx context.Context, gid string) error {
 
 func (a *Aria2Client) Remove(ctx context.Context, gid string) error {
 	return a.call(ctx, "aria2.remove", []interface{}{gid}, nil)
+}
+
+func isGIDNotFoundMessage(msg string) bool {
+	if msg == "" {
+		return false
+	}
+	lower := strings.ToLower(msg)
+	return strings.Contains(lower, "not found") ||
+		strings.Contains(lower, "no such download") ||
+		strings.Contains(lower, "cannot be found")
+}
+
+func isActionNotAllowedMessage(msg string) bool {
+	if msg == "" {
+		return false
+	}
+	lower := strings.ToLower(msg)
+	return strings.Contains(lower, "cannot be paused now") ||
+		strings.Contains(lower, "cannot be unpaused now") ||
+		strings.Contains(lower, "cannot be resumed now")
 }

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -115,7 +114,7 @@ func cmdAdd(args []string) {
 			return
 		}
 	}
-	urls, outDir, name, site, maxAttempts, api, err := parseAddArgs(args)
+	urls, outDir, name, site, api, err := parseAddArgs(args)
 	if err != nil {
 		fmt.Println("error:", err)
 		fmt.Println("usage: dlq add <url> [<url2> ...] --out /data/downloads [--name optional]")
@@ -132,11 +131,10 @@ func cmdAdd(args []string) {
 	hadErr := false
 	for _, urlStr := range urls {
 		payload := map[string]any{
-			"url":          urlStr,
-			"out_dir":      outDir,
-			"name":         name,
-			"site":         site,
-			"max_attempts": maxAttempts,
+			"url":     urlStr,
+			"out_dir": outDir,
+			"name":    name,
+			"site":    site,
 		}
 		var resp map[string]any
 		if err := postJSON(api+"/jobs", payload, &resp); err != nil {
@@ -151,8 +149,7 @@ func cmdAdd(args []string) {
 	}
 }
 
-func parseAddArgs(args []string) (urls []string, outDir, name, site string, maxAttempts int, api string, err error) {
-	maxAttempts = 5
+func parseAddArgs(args []string) (urls []string, outDir, name, site string, api string, err error) {
 	api = apiBase()
 	var files []string
 	useStdin := false
@@ -172,7 +169,7 @@ func parseAddArgs(args []string) (urls []string, outDir, name, site string, maxA
 				val = args[i+1]
 				i++
 			} else {
-				return nil, "", "", "", 0, "", fmt.Errorf("missing value for %s", key)
+				return nil, "", "", "", "", fmt.Errorf("missing value for %s", key)
 			}
 			switch key {
 			case "--out":
@@ -181,18 +178,12 @@ func parseAddArgs(args []string) (urls []string, outDir, name, site string, maxA
 				name = val
 			case "--site":
 				site = val
-			case "--max-attempts":
-				parsed, convErr := strconv.Atoi(val)
-				if convErr != nil {
-					return nil, "", "", "", 0, "", fmt.Errorf("invalid --max-attempts")
-				}
-				maxAttempts = parsed
 			case "--api":
 				api = val
 			case "--file":
 				files = append(files, val)
 			default:
-				return nil, "", "", "", 0, "", fmt.Errorf("unknown flag %s", key)
+				return nil, "", "", "", "", fmt.Errorf("unknown flag %s", key)
 			}
 			continue
 		}
@@ -201,23 +192,23 @@ func parseAddArgs(args []string) (urls []string, outDir, name, site string, maxA
 	if useStdin {
 		stdinURLs, err := readURLs(os.Stdin)
 		if err != nil {
-			return nil, "", "", "", 0, "", err
+			return nil, "", "", "", "", err
 		}
 		urls = append(urls, stdinURLs...)
 	}
 	for _, path := range files {
 		f, err := os.Open(path)
 		if err != nil {
-			return nil, "", "", "", 0, "", err
+			return nil, "", "", "", "", err
 		}
 		fileURLs, err := readURLs(f)
 		_ = f.Close()
 		if err != nil {
-			return nil, "", "", "", 0, "", err
+			return nil, "", "", "", "", err
 		}
 		urls = append(urls, fileURLs...)
 	}
-	return urls, outDir, name, site, maxAttempts, api, nil
+	return urls, outDir, name, site, api, nil
 }
 
 func readURLs(r *os.File) ([]string, error) {

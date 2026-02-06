@@ -1,7 +1,3 @@
-<script context="module">
-  export const ssr = false;
-</script>
-
 <script>
   import { onMount } from 'svelte';
   import { addJobsBatch, browse, clearJobs, getEvents, getMeta, getSettings, listJobs, mkdir, postAction, updateSettings } from '$lib/api';
@@ -82,17 +78,6 @@
       if (lower.includes('webshare.cz')) return 'webshare';
       return '';
     }
-  }
-
-  function countDetectedSites(urls) {
-    const counts = { mega: 0, webshare: 0, unknown: 0 };
-    for (const url of urls) {
-      const site = detectSite(url);
-      if (site === 'mega') counts.mega += 1;
-      else if (site === 'webshare') counts.webshare += 1;
-      else counts.unknown += 1;
-    }
-    return counts;
   }
 
   function countsFor(list) {
@@ -389,10 +374,8 @@
   }
 
   $: parsedUrls = parseUrls(addUrlsText);
-  $: detectedCounts = countDetectedSites(parsedUrls);
   $: sortedJobs = sortJobs(jobs);
   $: addErrors = addResults.filter((result) => !result.ok);
-  $: outDirPlaceholder = outDirPresets.length > 0 ? outDirPresets[0] : 'Select a preset or type a path';
   $: outDirPlaceholder = outDirPresets.length > 0 ? outDirPresets[0] : 'Select a preset or type a path';
 
   $: {

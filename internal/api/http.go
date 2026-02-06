@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log"
@@ -110,7 +111,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 		}
 		id, err := s.Queue.CreateJob(r.Context(), req.URL, req.OutDir, req.Name, req.Site, maxAttempts)
 		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
+			writeQueueErr(w, err)
 			return
 		}
 		log.Printf("action=add id=%d url=%q out=%q name=%q site=%q max_attempts=%d", id, req.URL, req.OutDir, req.Name, req.Site, maxAttempts)
@@ -139,7 +140,7 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 		}
 		job, err := s.Queue.GetJob(r.Context(), id)
 		if err != nil {
-			writeErr(w, http.StatusNotFound, err)
+			writeQueueErr(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, job)
@@ -155,7 +156,7 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 		}
 		events, err := s.Queue.ListEvents(r.Context(), id, limit)
 		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
+			writeQueueErr(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, events)
@@ -165,7 +166,7 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.Queue.Retry(r.Context(), id); err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
+			writeQueueErr(w, err)
 			return
 		}
 		log.Printf("action=retry id=%d", id)
@@ -176,7 +177,7 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.Queue.Remove(r.Context(), id); err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
+			writeQueueErr(w, err)
 			return
 		}
 		log.Printf("action=remove id=%d", id)
@@ -187,7 +188,7 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.Queue.Pause(r.Context(), id); err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
+			writeQueueErr(w, err)
 			return
 		}
 		log.Printf("action=pause id=%d", id)
@@ -198,7 +199,7 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.Queue.Resume(r.Context(), id); err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
+			writeQueueErr(w, err)
 			return
 		}
 		log.Printf("action=resume id=%d", id)
@@ -441,6 +442,39 @@ func writeJSON(w http.ResponseWriter, code int, v interface{}) {
 
 func writeErr(w http.ResponseWriter, code int, err error) {
 	writeJSON(w, code, map[string]string{"error": err.Error()})
+}
+
+func writeQueueErr(w http.ResponseWriter, err error) {
+	writeErr(w, statusForQueueErr(err), err)
+}
+
+func statusForQueueErr(err error) int {
+	if err == nil {
+		return http.StatusInternalServerError
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return http.StatusNotFound
+	}
+	if errors.Is(err, queue.ErrMissingEngineGID) {
+		return http.StatusConflict
+	}
+	if errors.Is(err, queue.ErrActionNotAllowed) {
+		return http.StatusConflict
+	}
+	if errors.Is(err, queue.ErrDownloaderNotConfigured) {
+		return http.StatusServiceUnavailable
+	}
+	switch err.Error() {
+	case "missing out_dir",
+		"no DATA_* volumes configured",
+		"out_dir must be absolute",
+		"out_dir is not within an allowed DATA_* volume",
+		"name must not contain path separators",
+		"invalid name":
+		return http.StatusBadRequest
+	default:
+		return http.StatusInternalServerError
+	}
 }
 
 func withRequestLimit(next http.Handler, limit int64) http.Handler {

@@ -43,6 +43,9 @@ func TestStoreRequeueClearsFields(t *testing.T) {
 	if err := store.MarkDownloading(ctx, id, "aria2", "gid-1"); err != nil {
 		t.Fatalf("mark downloading: %v", err)
 	}
+	if err := store.UpdateProgress(ctx, id, 77, StatusDownloading, 10, 1); err != nil {
+		t.Fatalf("update progress: %v", err)
+	}
 	if err := store.MarkFailed(ctx, id, "download_error", "fail", time.Now().UTC()); err != nil {
 		t.Fatalf("mark failed: %v", err)
 	}
@@ -64,6 +67,9 @@ func TestStoreRequeueClearsFields(t *testing.T) {
 	}
 	if updated.ResolvedURL.Valid || updated.Filename.Valid || updated.SizeBytes.Valid {
 		t.Fatalf("expected resolved fields to be cleared")
+	}
+	if updated.BytesDone != 0 {
+		t.Fatalf("expected bytes_done to be reset, got %d", updated.BytesDone)
 	}
 }
 

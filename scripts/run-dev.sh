@@ -88,6 +88,8 @@ docker run -d --name dlq \
   dlq:local
 
 if [ "${RUN_UI}" != "1" ]; then
+  # Keep the API container running when using API-only mode.
+  trap - INT TERM EXIT
   echo "DLQ API running at http://127.0.0.1:${DLQ_HTTP_PORT}"
   exit 0
 fi

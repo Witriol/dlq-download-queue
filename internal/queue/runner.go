@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	downloadclient "github.com/Witriol/my-downloader/internal/downloader"
 	"github.com/Witriol/my-downloader/internal/resolver"
 )
 
@@ -16,8 +17,8 @@ type Runner struct {
 	Store          *Store
 	Resolvers      *resolver.Registry
 	Downloader     Downloader
-	Concurrency    int            // static fallback
-	GetConcurrency func() int     // dynamic getter (preferred if set)
+	Concurrency    int        // static fallback
+	GetConcurrency func() int // dynamic getter (preferred if set)
 	PollEvery      time.Duration
 }
 
@@ -159,12 +160,11 @@ func (r *Runner) updateActive(ctx context.Context) error {
 		}
 		st, err := r.Downloader.TellStatus(ctx, job.EngineGID.String)
 		if err != nil {
-			msg := err.Error()
-			if strings.Contains(msg, "not found") || strings.Contains(msg, "status") {
-				_ = r.Store.MarkFailed(ctx, job.ID, "gid_not_found", msg, time.Now().UTC().Add(2*time.Minute))
+			if errors.Is(err, downloadclient.ErrGIDNotFound) {
+				_ = r.Store.MarkFailed(ctx, job.ID, "gid_not_found", err.Error(), time.Now().UTC().Add(2*time.Minute))
 				continue
 			}
-			_ = r.Store.AddEvent(ctx, job.ID, "error", msg)
+			_ = r.Store.AddEvent(ctx, job.ID, "error", err.Error())
 			continue
 		}
 		bytesDone, _ := strconv.ParseInt(st.CompletedLen, 10, 64)

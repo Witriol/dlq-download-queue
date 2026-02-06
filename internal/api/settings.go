@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -110,6 +111,9 @@ func (s *Settings) Update(updates map[string]interface{}) error {
 		if !ok {
 			return fmt.Errorf("concurrency must be a number")
 		}
+		if concurrency != math.Trunc(concurrency) {
+			return fmt.Errorf("concurrency must be an integer")
+		}
 		if concurrency < 1 || concurrency > 10 {
 			return fmt.Errorf("concurrency must be between 1 and 10")
 		}
@@ -120,6 +124,9 @@ func (s *Settings) Update(updates map[string]interface{}) error {
 		maxAttempts, ok := v.(float64) // JSON numbers are float64
 		if !ok {
 			return fmt.Errorf("max_attempts must be a number")
+		}
+		if maxAttempts != math.Trunc(maxAttempts) {
+			return fmt.Errorf("max_attempts must be an integer")
 		}
 		if maxAttempts < 1 || maxAttempts > 20 {
 			return fmt.Errorf("max_attempts must be between 1 and 20")
