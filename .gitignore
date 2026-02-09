@@ -12,7 +12,6 @@ ui/build/
 ui/.vite/
 ui/.env
 ui/.env.*
-ui/package-lock.json
 ui/pnpm-lock.yaml
 ui/yarn.lock
 .env
