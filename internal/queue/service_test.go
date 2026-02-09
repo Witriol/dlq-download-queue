@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	downloadclient "github.com/Witriol/my-downloader/internal/downloader"
+	downloadclient "github.com/Witriol/dlq-download-queue/internal/downloader"
 )
 
 type serviceTestDownloader struct {

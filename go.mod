@@ -1,4 +1,4 @@
-module github.com/Witriol/my-downloader
+module github.com/Witriol/dlq-download-queue
 
 go 1.22
 

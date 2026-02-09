@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Witriol/my-downloader/internal/queue"
+	"github.com/Witriol/dlq-download-queue/internal/queue"
 )
 
 func TestStatusForQueueErr(t *testing.T) {

@@ -3,7 +3,7 @@ package queue
 import (
 	"context"
 
-	"github.com/Witriol/my-downloader/internal/downloader"
+	"github.com/Witriol/dlq-download-queue/internal/downloader"
 )
 
 // Downloader defines the minimal aria2 client surface used by the queue.

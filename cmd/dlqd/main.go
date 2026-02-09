@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Witriol/my-downloader/internal/api"
-	"github.com/Witriol/my-downloader/internal/db"
-	"github.com/Witriol/my-downloader/internal/downloader"
-	"github.com/Witriol/my-downloader/internal/queue"
-	"github.com/Witriol/my-downloader/internal/resolver"
+	"github.com/Witriol/dlq-download-queue/internal/api"
+	"github.com/Witriol/dlq-download-queue/internal/db"
+	"github.com/Witriol/dlq-download-queue/internal/downloader"
+	"github.com/Witriol/dlq-download-queue/internal/queue"
+	"github.com/Witriol/dlq-download-queue/internal/resolver"
 )
 
 func main() {

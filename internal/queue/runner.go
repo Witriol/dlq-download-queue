@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	downloadclient "github.com/Witriol/my-downloader/internal/downloader"
-	"github.com/Witriol/my-downloader/internal/resolver"
+	downloadclient "github.com/Witriol/dlq-download-queue/internal/downloader"
+	"github.com/Witriol/dlq-download-queue/internal/resolver"
 )
 
 type Runner struct {

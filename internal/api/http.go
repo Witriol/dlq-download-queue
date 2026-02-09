@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Witriol/my-downloader/internal/queue"
+	"github.com/Witriol/dlq-download-queue/internal/queue"
 )
 
 const maxRequestBodyBytes = 1 << 20

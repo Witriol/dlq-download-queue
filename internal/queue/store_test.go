@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Witriol/my-downloader/internal/db"
+	"github.com/Witriol/dlq-download-queue/internal/db"
 )
 
 func newTestStore(t *testing.T) *Store {
