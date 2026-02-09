@@ -1,6 +1,20 @@
 # DLQ (Download Queue)
 
+[![CI](https://github.com/Witriol/dlq-download-queue/actions/workflows/ci.yml/badge.svg)](https://github.com/Witriol/dlq-download-queue/actions/workflows/ci.yml)
+[![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Minimal headless download-queue daemon + CLI inspired by JDownloader, designed for Docker and terminal use.
+
+### Features
+
+- Persistent SQLite-backed job queue with retries, pause/resume, and soft delete
+- Aria2-powered downloads with progress, speed, and ETA reporting
+- Pluggable URL resolvers (Webshare anonymous mode, HTTP/HTTPS passthrough)
+- CLI for scripting and automation (`dlq add`, `dlq status --watch`, ...)
+- Optional SvelteKit web UI with batch add, folder browser, and live dashboard
+- Docker-first: runs as two containers (API + UI), supports `PUID`/`PGID`
+- Unraid-friendly with deploy script and `DATA_*` volume presets
 
 ## Quick start (Docker)
 
@@ -8,8 +22,9 @@ Minimal headless download-queue daemon + CLI inspired by JDownloader, designed f
 docker build -t dlq:local .
 
 docker run -d --name dlq \
-  -v /mnt/user/downloads:/data \
-  -v /mnt/user/appdata/dlq:/state \
+  -p 8099:8099 \
+  -v /path/to/downloads:/data \
+  -v /path/to/state:/state \
   dlq:local
 ```
 
@@ -25,7 +40,7 @@ Check status:
 docker exec -it dlq dlq status
 ```
 
-To access the HTTP API from the host, publish the port (e.g., `-p 8099:8099`). If you change the port, set `DLQ_HTTP_PORT` to match.
+If you change the port, set `DLQ_HTTP_PORT` to match.
 
 ## CLI
 
@@ -91,14 +106,22 @@ Concurrency is stored in `settings.json` under `DLQ_STATE_DIR` and can be update
 UI out_dir presets are derived from `DATA_*` env values (container paths); make sure they are passed into the container.
 All job `out_dir` values must live under one of the `DATA_*` container paths.
 
+## Security
+
+DLQ is designed for **trusted networks** (home LAN, Docker internal networking). The HTTP API has no authentication.
+
+- **Do not** expose DLQ ports directly to the public internet. Use a reverse proxy with authentication (e.g., Caddy, Traefik, nginx) if remote access is needed.
+- Set `ARIA2_SECRET` even in Docker to prevent unauthorized RPC access to aria2.
+- All `out_dir` values are validated against `DATA_*` container paths to prevent path traversal.
+- Credentials (e.g., for future resolver auth) should be provided via environment variables only; they are never logged.
+
 ## Notes
 
 - Webshare resolver uses the public API in anonymous mode when possible and forces single-connection downloads for reliability.
-- MEGA resolver is a stub; plug in MEGAcmd or a SDK-based resolver later.
-- Credentials should be provided via env vars or secrets; never log them.
+- MEGA resolver is a stub — plug in MEGAcmd or an SDK-based resolver later (see `internal/resolver/mega.go`).
 - If aria2 restarts, `dlq resume <id>` will re-queue the job and re-resolve the URL.
 - If you set `PUID`/`PGID`, ensure `/data` and `/state` are writable by that user on the host.
-- If you see `attempt to write a readonly database`, fix permissions on the host (e.g., `chown -R 99:100 /mnt/user/appdata/dlq`).
+- If you see `attempt to write a readonly database`, fix permissions on the host (e.g., `chown -R 99:100 /path/to/state`).
 
 ## Docker Compose
 

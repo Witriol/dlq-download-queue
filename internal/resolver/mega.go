@@ -7,6 +7,13 @@ import (
 	"strings"
 )
 
+// megaResolver is a stub. MEGA downloads require a dedicated tool (MEGAcmd or
+// the MEGA SDK) that is not yet integrated. The resolver recognises mega.nz
+// URLs so they get a clear error instead of falling through to the HTTP
+// resolver.
+//
+// TODO: integrate MEGAcmd CLI or a Go SDK wrapper to support MEGA downloads.
+// TODO: add credential handling via MEGA_EMAIL / MEGA_PASSWORD env vars.
 type megaResolver struct{}
 
 func NewMegaResolver() Resolver {
@@ -23,7 +30,5 @@ func (r *megaResolver) CanHandle(rawURL string) bool {
 }
 
 func (r *megaResolver) Resolve(ctx context.Context, rawURL string) (*ResolvedTarget, error) {
-	// Placeholder: MEGA resolution is handled by a dedicated downloader (MEGAcmd or SDK).
-	// Return a typed error so the daemon can report it cleanly.
 	return nil, errors.New("mega_resolver_not_configured")
 }
