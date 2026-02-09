@@ -6,7 +6,23 @@
 
 Minimal headless download-queue daemon + CLI inspired by JDownloader, designed for Docker and terminal use.
 
-### Features
+## Table of Contents
+
+- [Features](#features)
+- [Architecture](#architecture)
+- [Quick start (Docker)](#quick-start-docker)
+- [CLI](#cli)
+- [UI (SvelteKit)](#ui-sveltekit)
+- [How it works](#how-it-works)
+- [Environment variables](#environment-variables)
+- [Security](#security)
+- [Docker Compose](#docker-compose)
+- [Deploy to Unraid](#deploy-to-unraid)
+- [Testing](#testing)
+- [Development](#development)
+- [License](#license)
+
+## Features
 
 - Persistent SQLite-backed job queue with retries, pause/resume, and soft delete
 - Aria2-powered downloads with progress, speed, and ETA reporting
@@ -15,6 +31,56 @@ Minimal headless download-queue daemon + CLI inspired by JDownloader, designed f
 - Optional SvelteKit web UI with batch add, folder browser, and live dashboard
 - Docker-first: runs as two containers (API + UI), supports `PUID`/`PGID`
 - Unraid-friendly with deploy script and `DATA_*` volume presets
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Docker host                                                │
+│                                                             │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │  dlq container                                        │  │
+│  │                                                       │  │
+│  │   ┌─────────┐    ┌──────────────────────────────┐     │  │
+│  │   │  dlq    │───▶│  dlqd  (HTTP API :8099)      │     │  │
+│  │   │  (CLI)  │    │                              │     │  │
+│  │   └─────────┘    │  ┌──────────┐  ┌──────────┐  │     │  │
+│  │                  │  │ resolver │  │  queue   │  │     │  │
+│  │                  │  │ webshare │  │ service  │  │     │  │
+│  │                  │  │ http(s)  │  └────┬─────┘  │     │  │
+│  │                  │  │ mega stub│       │        │     │  │
+│  │                  │  └──────────┘       ▼        │     │  │
+│  │                  │             ┌──────────────┐ │     │  │
+│  │                  │             │  SQLite DB   │ │     │  │
+│  │                  │             │ /state/dlq.db│ │     │  │
+│  │                  │             └──────────────┘ │     │  │
+│  │                  │                    │         │     │  │
+│  │                  │                    ▼         │     │  │
+│  │                  │             ┌──────────────┐ │     │  │
+│  │                  │             │  downloader  │ │     │  │
+│  │                  │             │  (aria2 RPC) │ │     │  │
+│  │                  │             └──────┬───────┘ │     │  │
+│  │                  └────────────────────┼─────────┘     │  │
+│  │                                       ▼               │  │
+│  │                                ┌─────────────┐        │  │
+│  │                                │   aria2c    │        │  │
+│  │                                │  (JSON-RPC) │        │  │
+│  │                                └──────┬──────┘        │  │
+│  │                                       ▼               │  │
+│  │                                   /data/*             │  │
+│  └───────────────────────────────────────────────────────┘  │
+│                                                             │
+│  ┌───────────────────────────────────┐                      │
+│  │  dlq-webui container (optional)   │                      │
+│  │                                   │                      │
+│  │   SvelteKit app :8098 ───────────────▶ dlqd API :8099    │
+│  │   (SSR, proxies API calls)        │                      │
+│  └───────────────────────────────────┘                      │
+│                                                             │
+│  Browser ───▶ :8098 (UI)                                    │
+│  Terminal ──▶ docker exec dlq dlq ...                       │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## Quick start (Docker)
 
@@ -44,6 +110,8 @@ If you change the port, set `DLQ_HTTP_PORT` to match.
 
 ## CLI
 
+![CLI status output](docs/cli-01.jpg)
+
 - `dlq add <url> [<url2> ...] --out /data/downloads [--name optional] [--site mega|webshare|http|https]`
 - `dlq add --file urls.txt --out /data/downloads`
 - `dlq add --stdin --out /data/downloads`
@@ -61,6 +129,9 @@ If you change the port, set `DLQ_HTTP_PORT` to match.
 - `dlq help`
 
 ## UI (SvelteKit)
+
+![Web UI – dashboard](docs/webui-01.jpg)
+![Web UI – add job](docs/webui-02.jpg)
 
 The UI is optional and lives under `ui/`. It proxies the DLQ HTTP API server-side.
 The Unraid deploy script runs the UI as a separate container (`dlq-webui`) on `DLQ_WEBUI_PORT` (default `8098`).
@@ -83,28 +154,38 @@ Presets for out_dir are served from `GET /meta` and derived from `DATA_*` volume
 
 ## Environment variables
 
-- `DLQ_STATE_DIR` (default `/state`)
-- `DLQ_DB` (default `/state/dlq.db`)
-- `DLQ_HTTP_PORT` (default `8099`)
-- `DLQ_HTTP_HOST` (default `0.0.0.0`)
-- `DLQ_HTTP_ADDR` (optional explicit host:port override; takes precedence if set)
-- `DLQ_API` (client base URL for CLI/UI, e.g. `http://127.0.0.1:8099`)
-- `DLQ_WEBUI_PORT` (default `8098`, used by the web UI container)
-- `PUID` / `PGID` (optional; if set, dlqd + aria2 run as that user)
-- `ARIA2_RPC` (default `http://127.0.0.1:6800/jsonrpc`)
-- `ARIA2_RPC_LISTEN_PORT` (default parsed from `ARIA2_RPC`, fallback `6800`)
-- `ARIA2_SECRET` (optional; recommended)
-- `ARIA2_DISABLE=1` (disable built-in aria2c process in the container)
-- `ARIA2_DIR` (default first `DATA_*` container path, fallback `/data`)
-- `ARIA2_EXTRA_OPTS` (optional extra aria2c flags)
-- `ARIA2_MAX_CONNECTION_PER_SERVER` (default `4`)
-- `ARIA2_SUMMARY_INTERVAL` (default `0`, set >0 to enable aria2 summary output)
-- `ARIA2_CONSOLE_LOG_LEVEL` (default `warn`)
-- `ARIA2_SHOW_CONSOLE_READOUT` (default `false`)
+### DLQ
 
-Concurrency is stored in `settings.json` under `DLQ_STATE_DIR` and can be updated via `dlq settings --concurrency` or the UI. The file is created with the default value on first start.
-UI out_dir presets are derived from `DATA_*` env values (container paths); make sure they are passed into the container.
-All job `out_dir` values must live under one of the `DATA_*` container paths.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DLQ_STATE_DIR` | `/state` | Directory for state files |
+| `DLQ_DB` | `/state/dlq.db` | Path to the SQLite database |
+| `DLQ_HTTP_PORT` | `8099` | API server port |
+| `DLQ_HTTP_HOST` | `0.0.0.0` | API server bind address |
+| `DLQ_HTTP_ADDR` | — | Explicit `host:port` override (takes precedence over host/port) |
+| `DLQ_API` | — | Client base URL for CLI/UI (e.g. `http://127.0.0.1:8099`) |
+| `DLQ_WEBUI_PORT` | `8098` | Web UI container port |
+| `PUID` / `PGID` | — | Run dlqd + aria2 as this user/group |
+| `DATA_*` | — | Volume mappings (e.g. `DATA_TVSHOWS=/mnt/user/tvshows:/data/tvshows`) |
+
+### Aria2
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ARIA2_RPC` | `http://127.0.0.1:6800/jsonrpc` | Aria2 JSON-RPC endpoint |
+| `ARIA2_RPC_LISTEN_PORT` | parsed from `ARIA2_RPC`, fallback `6800` | Aria2 listen port |
+| `ARIA2_SECRET` | — | RPC secret token (recommended) |
+| `ARIA2_DISABLE` | — | Set to `1` to disable the built-in aria2c process |
+| `ARIA2_DIR` | first `DATA_*` path, fallback `/data` | Default download directory for aria2 |
+| `ARIA2_EXTRA_OPTS` | — | Extra aria2c command-line flags |
+| `ARIA2_MAX_CONNECTION_PER_SERVER` | `4` | Max connections per server |
+| `ARIA2_SUMMARY_INTERVAL` | `0` | Summary log interval in seconds (0 = disabled) |
+| `ARIA2_CONSOLE_LOG_LEVEL` | `warn` | Aria2 console log level |
+| `ARIA2_SHOW_CONSOLE_READOUT` | `false` | Show aria2 console readout |
+
+> **Note:** Concurrency is stored in `settings.json` under `DLQ_STATE_DIR` and can be updated via `dlq settings --concurrency` or the UI. The file is created with the default value on first start.
+>
+> UI out_dir presets are derived from `DATA_*` env values (container paths); make sure they are passed into the container. All job `out_dir` values must live under one of the `DATA_*` container paths.
 
 ## Security
 
@@ -197,24 +278,3 @@ scripts/run-dev.sh
 ## License
 
 MIT. See `LICENSE`. Third-party notices in `THIRD_PARTY_NOTICES.md`.
-
-## Remote CLI shortcut
-
-Add this to your `~/.zshrc` (or `~/.bashrc`) to run the CLI on Unraid via SSH:
-
-```
-dlq() {
-  if [ -t 0 ]; then
-    ssh -t my-server "docker exec -it dlq dlq $(printf '%q ' "$@")"
-  else
-    ssh my-server "docker exec -i dlq dlq $(printf '%q ' "$@")"
-  fi
-}
-```
-
-Then:
-
-```
-dlq status
-dlq add "https://example.com/file?x=1&y=2" --out /data/movies
-```
