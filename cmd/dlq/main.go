@@ -16,6 +16,8 @@ func main() {
 	case "--version", "version":
 		fmt.Println(versionString())
 		return
+	case "info":
+		cmdInfo(os.Args[2:])
 	case "add":
 		cmdAdd(os.Args[2:])
 	case "status":
@@ -56,22 +58,31 @@ func usage() {
 	fmt.Println("DLQ - headless download queue CLI")
 	fmt.Println("")
 	fmt.Println("Usage:")
-	fmt.Println("  dlq add <url> [<url2> ...] --out /data/downloads [--name optional] [--site mega|webshare|http|https]")
+	fmt.Println("  dlq <command> [options]")
+	fmt.Println("")
+	fmt.Println("Core:")
+	fmt.Println("  dlq add <url> [<url2> ...] --out /data/downloads [--name optional] [--site mega|webshare|ouo|http|https]")
 	fmt.Println("  dlq add --file urls.txt --out /data/downloads")
 	fmt.Println("  dlq add --stdin --out /data/downloads")
 	fmt.Println("  dlq status [--watch] [--interval 1] [--status <state>]")
 	fmt.Println("  dlq files")
 	fmt.Println("  dlq logs <job_id> [--tail 50]")
-	fmt.Println("  dlq retry <job_id>")
+	fmt.Println("  dlq info [--api http://127.0.0.1:8099]")
+	fmt.Println("  dlq help")
+	fmt.Println("  dlq version | dlq --version")
+	fmt.Println("")
+	fmt.Println("Job Control:")
 	fmt.Println("  dlq pause <job_id>")
 	fmt.Println("  dlq resume <job_id>")
+	fmt.Println("  dlq retry <job_id>")
 	fmt.Println("  dlq remove <job_id>")
+	fmt.Println("")
+	fmt.Println("Maintenance:")
 	fmt.Println("  dlq clear      (clear completed jobs)")
 	fmt.Println("  dlq purge      (delete all jobs and events)")
-	fmt.Println("  dlq settings [--concurrency <1-10>]")
 	fmt.Println("")
-	fmt.Println("Env:")
-	fmt.Println("  DLQ_API=http://127.0.0.1:8099")
+	fmt.Println("Configuration:")
+	fmt.Println("  dlq settings [--concurrency <1-10>]")
 }
 
 func apiBase() string {
