@@ -48,7 +48,7 @@ Minimal headless download-queue daemon + CLI inspired by JDownloader, designed f
 │  │                  │  │ resolver │  │  queue   │  │     │  │
 │  │                  │  │ webshare │  │ service  │  │     │  │
 │  │                  │  │ http(s)  │  └────┬─────┘  │     │  │
-│  │                  │  │ mega stub│       │        │     │  │
+│  │                  │  │ mega     │       │        │     │  │
 │  │                  │  └──────────┘       ▼        │     │  │
 │  │                  │             ┌──────────────┐ │     │  │
 │  │                  │             │  SQLite DB   │ │     │  │
@@ -199,7 +199,7 @@ DLQ is designed for **trusted networks** (home LAN, Docker internal networking).
 ## Notes
 
 - Webshare resolver uses the public API in anonymous mode when possible and forces single-connection downloads for reliability.
-- MEGA resolver is a stub — plug in MEGAcmd or an SDK-based resolver later (see `internal/resolver/mega.go`).
+- MEGA resolver supports public file links (`mega.nz/file/...`) by resolving them to MEGA's temporary download URL.
 - If aria2 restarts, `dlq resume <id>` will re-queue the job and re-resolve the URL.
 - If you set `PUID`/`PGID`, ensure `/data` and `/state` are writable by that user on the host.
 - If you see `attempt to write a readonly database`, fix permissions on the host (e.g., `chown -R 99:100 /path/to/state`).
