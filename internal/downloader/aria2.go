@@ -154,7 +154,26 @@ func (a *Aria2Client) Unpause(ctx context.Context, gid string) error {
 }
 
 func (a *Aria2Client) Remove(ctx context.Context, gid string) error {
-	return a.call(ctx, "aria2.remove", []interface{}{gid}, nil)
+	err := a.call(ctx, "aria2.remove", []interface{}{gid}, nil)
+	switch {
+	case err == nil:
+		// removed from active/waiting list
+	case errors.Is(err, ErrActionNotAllowed):
+		// Fallback for states where normal remove is rejected.
+		if forceErr := a.call(ctx, "aria2.forceRemove", []interface{}{gid}, nil); forceErr != nil && !errors.Is(forceErr, ErrGIDNotFound) {
+			return forceErr
+		}
+	case errors.Is(err, ErrGIDNotFound):
+		// Might already be in stopped list; continue with result cleanup.
+	default:
+		return err
+	}
+
+	// Ensure stale download result entries do not block re-adding the same URL/path.
+	if cleanupErr := a.call(ctx, "aria2.removeDownloadResult", []interface{}{gid}, nil); cleanupErr != nil && !errors.Is(cleanupErr, ErrGIDNotFound) {
+		return cleanupErr
+	}
+	return nil
 }
 
 func isGIDNotFoundMessage(msg string) bool {
@@ -174,5 +193,6 @@ func isActionNotAllowedMessage(msg string) bool {
 	lower := strings.ToLower(msg)
 	return strings.Contains(lower, "cannot be paused now") ||
 		strings.Contains(lower, "cannot be unpaused now") ||
-		strings.Contains(lower, "cannot be resumed now")
+		strings.Contains(lower, "cannot be resumed now") ||
+		strings.Contains(lower, "cannot be removed now")
 }
