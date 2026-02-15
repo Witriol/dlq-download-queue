@@ -45,7 +45,7 @@ RPC_PORT="${RPC_PORT:-6800}"
 
 if [ ! -f "${SETTINGS_FILE}" ]; then
   mkdir -p "$(dirname "${SETTINGS_FILE}")"
-  printf '{\n  "concurrency": %s,\n  "max_attempts": %s\n}\n' "${DEFAULT_CONCURRENCY}" "${DEFAULT_MAX_ATTEMPTS}" > "${SETTINGS_FILE}"
+  printf '{\n  "concurrency": %s,\n  "max_attempts": %s,\n  "auto_decrypt": true\n}\n' "${DEFAULT_CONCURRENCY}" "${DEFAULT_MAX_ATTEMPTS}" > "${SETTINGS_FILE}"
 fi
 
 CONCURRENCY="$(sed -n 's/.*"concurrency"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p' "${SETTINGS_FILE}" | head -n 1)"

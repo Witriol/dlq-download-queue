@@ -11,11 +11,13 @@ import (
 
 const defaultConcurrency = 2
 const defaultMaxAttempts = 5
+const defaultAutoDecrypt = true
 
 // Settings represents runtime application settings
 type Settings struct {
-	Concurrency int `json:"concurrency"`
-	MaxAttempts int `json:"max_attempts"`
+	Concurrency int  `json:"concurrency"`
+	MaxAttempts int  `json:"max_attempts"`
+	AutoDecrypt bool `json:"auto_decrypt"`
 	mu          sync.RWMutex
 	path        string
 }
@@ -26,6 +28,7 @@ func NewSettings(stateDir string) (*Settings, error) {
 	s := &Settings{
 		Concurrency: defaultConcurrency,
 		MaxAttempts: defaultMaxAttempts,
+		AutoDecrypt: defaultAutoDecrypt,
 		path:        path,
 	}
 
@@ -83,6 +86,7 @@ func (s *Settings) Get() map[string]interface{} {
 	return map[string]interface{}{
 		"concurrency":  s.Concurrency,
 		"max_attempts": s.MaxAttempts,
+		"auto_decrypt": s.AutoDecrypt,
 	}
 }
 
@@ -98,6 +102,13 @@ func (s *Settings) GetMaxAttempts() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.MaxAttempts
+}
+
+// GetAutoDecrypt returns whether archive auto-decrypt is enabled.
+func (s *Settings) GetAutoDecrypt() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.AutoDecrypt
 }
 
 // Update updates settings with the provided values and saves to disk
@@ -132,6 +143,14 @@ func (s *Settings) Update(updates map[string]interface{}) error {
 			return fmt.Errorf("max_attempts must be between 1 and 20")
 		}
 		s.MaxAttempts = int(maxAttempts)
+	}
+
+	if v, ok := updates["auto_decrypt"]; ok {
+		autoDecrypt, ok := v.(bool)
+		if !ok {
+			return fmt.Errorf("auto_decrypt must be a boolean")
+		}
+		s.AutoDecrypt = autoDecrypt
 	}
 
 	return nil

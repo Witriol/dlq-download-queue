@@ -52,11 +52,13 @@ func main() {
 	}
 
 	runner := &queue.Runner{
-		Store:          store,
-		Resolvers:      resRegistry,
-		Downloader:     downloader.NewAria2Client(aria2RPC, aria2Secret),
-		GetConcurrency: settings.GetConcurrency,
-		PollEvery:      2 * time.Second,
+		Store:            store,
+		Resolvers:        resRegistry,
+		Downloader:       downloader.NewAria2Client(aria2RPC, aria2Secret),
+		ArchiveDecryptor: queue.NewArchiveDecryptor(),
+		GetConcurrency:   settings.GetConcurrency,
+		GetAutoDecrypt:   settings.GetAutoDecrypt,
+		PollEvery:        2 * time.Second,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
