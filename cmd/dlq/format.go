@@ -17,7 +17,7 @@ func printJobs(jobs []jobView) {
 	fmt.Fprintln(tw, "ID\tSTATUS\tPROGRESS\tSPEED\tETA\tOUT\tNAME/URL")
 	for _, j := range jobs {
 		done := j.BytesDone
-		if done == 0 && j.Status == "completed" && j.SizeBytes > 0 {
+		if done == 0 && (j.Status == "completed" || j.Status == "decrypting" || j.Status == "decrypt_failed") && j.SizeBytes > 0 {
 			done = j.SizeBytes
 		}
 		progress := formatProgress(done, j.SizeBytes)
@@ -72,7 +72,7 @@ func formatProgress(done, total int64) string {
 func hasActiveJobs(jobs []jobView) bool {
 	for _, j := range jobs {
 		switch j.Status {
-		case "queued", "resolving", "downloading", "paused":
+		case "queued", "resolving", "downloading", "paused", "decrypting":
 			return true
 		}
 	}

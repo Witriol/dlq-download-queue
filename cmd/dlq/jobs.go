@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"text/tabwriter"
 	"time"
 )
@@ -38,10 +39,10 @@ func cmdStatus(args []string) {
 		for _, j := range jobs {
 			counts[j.Status]++
 		}
-		active := counts["queued"] + counts["resolving"] + counts["downloading"] + counts["paused"]
-		done := counts["completed"] + counts["failed"]
-		fmt.Printf("Jobs: %d total | active: %d (queued %d, resolving %d, downloading %d, paused %d) | done: %d (completed %d, failed %d)\n",
-			len(jobs), active, counts["queued"], counts["resolving"], counts["downloading"], counts["paused"], done, counts["completed"], counts["failed"])
+		active := counts["queued"] + counts["resolving"] + counts["downloading"] + counts["paused"] + counts["decrypting"]
+		done := counts["completed"] + counts["failed"] + counts["decrypt_failed"]
+		fmt.Printf("Jobs: %d total | active: %d (queued %d, resolving %d, downloading %d, paused %d, decrypting %d) | done: %d (completed %d, failed %d, decrypt_failed %d)\n",
+			len(jobs), active, counts["queued"], counts["resolving"], counts["downloading"], counts["paused"], counts["decrypting"], done, counts["completed"], counts["failed"], counts["decrypt_failed"])
 		printJobs(jobs)
 		if !*watch || !hasActiveJobs(jobs) {
 			return
@@ -150,10 +151,11 @@ func cmdSettings(args []string) {
 	fs := flag.NewFlagSet("settings", flag.ExitOnError)
 	api := fs.String("api", apiBase(), "api base URL")
 	concurrency := fs.Int("concurrency", 0, "set concurrency (1-10)")
+	autoDecrypt := fs.String("auto-decrypt", "", "set archive auto decrypt (true|false)")
 	fs.Parse(args)
 
 	// If no flags set, just show current settings.
-	if *concurrency == 0 {
+	if *concurrency == 0 && *autoDecrypt == "" {
 		var settings map[string]interface{}
 		if err := getJSON(*api+"/api/settings", &settings); err != nil {
 			fmt.Println("error:", err)
@@ -169,6 +171,18 @@ func cmdSettings(args []string) {
 	updates := make(map[string]interface{})
 	if *concurrency > 0 {
 		updates["concurrency"] = *concurrency
+	}
+	if *autoDecrypt != "" {
+		parsed, err := strconv.ParseBool(*autoDecrypt)
+		if err != nil {
+			fmt.Println("error: --auto-decrypt must be true or false")
+			return
+		}
+		updates["auto_decrypt"] = parsed
+	}
+	if len(updates) == 0 {
+		fmt.Println("error: no updates provided")
+		return
 	}
 
 	var result map[string]interface{}
