@@ -255,24 +255,26 @@ func TestListPendingArchiveDecryptAndClear(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list pending archive decrypt: %v", err)
 	}
-	if len(pending) != 3 {
-		t.Fatalf("expected 3 pending jobs, got %+v", pending)
+	if len(pending) != 2 {
+		t.Fatalf("expected 2 pending jobs, got %+v", pending)
 	}
 	ids := map[int64]bool{
 		withPassID:   false,
 		decryptingID: false,
-		noPassID:     false,
 	}
 	for _, j := range pending {
 		if _, ok := ids[j.ID]; ok {
 			ids[j.ID] = true
 		}
+		if j.ID == noPassID {
+			t.Fatalf("expected completed no-password archive job %d to be excluded from pending list", noPassID)
+		}
 		if j.ID == nonArchiveID {
 			t.Fatalf("expected non-archive job %d to be excluded from pending list", nonArchiveID)
 		}
 	}
-	if !ids[withPassID] || !ids[decryptingID] || !ids[noPassID] {
-		t.Fatalf("expected jobs %d, %d, and %d in pending list, got %+v", withPassID, decryptingID, noPassID, pending)
+	if !ids[withPassID] || !ids[decryptingID] {
+		t.Fatalf("expected jobs %d and %d in pending list, got %+v", withPassID, decryptingID, pending)
 	}
 
 	if err := store.ClearArchivePassword(ctx, withPassID); err != nil {

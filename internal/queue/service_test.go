@@ -14,6 +14,7 @@ type serviceTestDownloader struct {
 	pauseErr   error
 	unpauseErr error
 	removeErr  error
+	removeHits int
 }
 
 func (d *serviceTestDownloader) AddURI(ctx context.Context, uri string, options map[string]string) (string, error) {
@@ -33,6 +34,7 @@ func (d *serviceTestDownloader) Unpause(ctx context.Context, gid string) error {
 }
 
 func (d *serviceTestDownloader) Remove(ctx context.Context, gid string) error {
+	d.removeHits++
 	return d.removeErr
 }
 
@@ -193,5 +195,53 @@ func TestServiceRemoveIgnoresGIDNotFound(t *testing.T) {
 	}
 	if job.Status != StatusDeleted {
 		t.Fatalf("expected deleted status, got %s", job.Status)
+	}
+}
+
+func TestServiceRetryDecryptFailedQueuesDecryptOnly(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	id, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/file",
+		OutDir:      "/data",
+		Name:        "archive.zip",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := store.MarkDecryptFailed(ctx, id, "archive decrypt failed"); err != nil {
+		t.Fatalf("mark decrypt failed: %v", err)
+	}
+	dl := &serviceTestDownloader{}
+	svc := NewService(store, dl, []string{"/data"})
+
+	if err := svc.Retry(ctx, id); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+
+	if dl.removeHits != 0 {
+		t.Fatalf("expected downloader remove not to be called, got %d", dl.removeHits)
+	}
+	job, err := store.GetJob(ctx, id)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if job.Status != StatusDecrypting {
+		t.Fatalf("expected decrypting status, got %s", job.Status)
+	}
+	events, err := store.ListEvents(ctx, id, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	found := false
+	for _, line := range events {
+		if strings.Contains(line, "retry decrypt queued") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected retry decrypt queued event, got %v", events)
 	}
 }

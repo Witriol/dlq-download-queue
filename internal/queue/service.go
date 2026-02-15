@@ -95,6 +95,12 @@ func (s *Service) Retry(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
+	if job.Status == StatusDecryptFail {
+		if err := s.store.MarkDecrypting(ctx, id, job.BytesDone); err != nil {
+			return err
+		}
+		return s.store.AddEvent(ctx, id, "info", "retry decrypt queued")
+	}
 	if job.EngineGID.Valid && s.downloader != nil {
 		if err := s.removeEngineTask(ctx, job.EngineGID.String); err != nil {
 			return err

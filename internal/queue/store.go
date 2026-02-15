@@ -140,24 +140,7 @@ FROM jobs
 WHERE deleted_at IS NULL
   AND (
     status = ?
-    OR (
-      status = ?
-      AND (
-        LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.zip'
-        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.7z'
-        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.rar'
-        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.tar'
-        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.tar.gz'
-        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.tgz'
-        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.tar.bz2'
-        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.tbz2'
-        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.tar.xz'
-        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.txz'
-        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.gz'
-        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.bz2'
-        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.xz'
-      )
-    )
+    OR (status = ? AND archive_password IS NOT NULL AND TRIM(archive_password) <> '')
   )
 ORDER BY id ASC`
 	args := []any{StatusDecrypting, StatusCompleted}

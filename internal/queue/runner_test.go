@@ -554,6 +554,42 @@ func TestRunnerDispatchesCompletedDecryptFromWorker(t *testing.T) {
 	}
 }
 
+func TestRunnerDispatchSkipsCompletedNoPasswordToAvoidLoop(t *testing.T) {
+	store := newRunnerStore(t)
+	ctx := context.Background()
+	id, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/archive",
+		OutDir:      "/data",
+		Name:        "archive.zip",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := store.MarkCompleted(ctx, id); err != nil {
+		t.Fatalf("mark completed: %v", err)
+	}
+
+	fakeDL := &fakeDownloader{}
+	fakeDec := &fakeArchiveDecryptor{attempted: true}
+	runner := &Runner{
+		Store:            store,
+		Resolvers:        resolver.NewRegistry(&fakeResolver{}),
+		Downloader:       fakeDL,
+		ArchiveDecryptor: fakeDec,
+		GetAutoDecrypt:   func() bool { return true },
+		Concurrency:      1,
+	}
+
+	if err := runner.dispatchCompletedDecrypt(ctx); err != nil {
+		t.Fatalf("dispatchCompletedDecrypt: %v", err)
+	}
+	called, _, _, _ := fakeDec.snapshot()
+	if called {
+		t.Fatalf("expected completed no-password archive job to be skipped by dispatch worker")
+	}
+}
+
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
