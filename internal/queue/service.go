@@ -2,9 +2,11 @@ package queue
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	downloadclient "github.com/Witriol/dlq-download-queue/internal/downloader"
 )
@@ -27,7 +29,7 @@ func NewService(store *Store, dl Downloader, allowedRoots []string) *Service {
 	return &Service{store: store, downloader: dl, allowedRoots: roots}
 }
 
-func (s *Service) CreateJob(ctx context.Context, url, outDir, name, site string, maxAttempts int) (int64, error) {
+func (s *Service) CreateJob(ctx context.Context, url, outDir, name, site, archivePassword string, maxAttempts int) (int64, error) {
 	if maxAttempts <= 0 {
 		maxAttempts = 5
 	}
@@ -39,7 +41,11 @@ func (s *Service) CreateJob(ctx context.Context, url, outDir, name, site string,
 	if err != nil {
 		return 0, err
 	}
+	archivePassword = strings.TrimSpace(archivePassword)
 	job := &Job{URL: url, OutDir: cleanOut, Name: cleanName, Site: site, MaxAttempts: maxAttempts}
+	if archivePassword != "" {
+		job.ArchivePassword = sqlNullString(archivePassword)
+	}
 	id, err := s.store.CreateJob(ctx, job)
 	if err != nil {
 		return 0, err
@@ -50,6 +56,9 @@ func (s *Service) CreateJob(ctx context.Context, url, outDir, name, site string,
 	}
 	if site != "" {
 		msg += " site=" + site
+	}
+	if archivePassword != "" {
+		msg += " archive_password=***"
 	}
 	msg += " max_attempts=" + strconv.Itoa(maxAttempts)
 	_ = s.store.AddEvent(ctx, id, "info", msg)
@@ -87,7 +96,9 @@ func (s *Service) Retry(ctx context.Context, id int64) error {
 		return err
 	}
 	if job.EngineGID.Valid && s.downloader != nil {
-		_ = s.downloader.Remove(ctx, job.EngineGID.String)
+		if err := s.removeEngineTask(ctx, job.EngineGID.String); err != nil {
+			return err
+		}
 	}
 	if err := s.store.Requeue(ctx, id); err != nil {
 		return err
@@ -101,7 +112,9 @@ func (s *Service) Remove(ctx context.Context, id int64) error {
 		return err
 	}
 	if job.EngineGID.Valid && s.downloader != nil {
-		_ = s.downloader.Remove(ctx, job.EngineGID.String)
+		if err := s.removeEngineTask(ctx, job.EngineGID.String); err != nil {
+			return err
+		}
 	}
 	if err := s.store.Remove(ctx, id); err != nil {
 		return err
@@ -172,6 +185,22 @@ func (s *Service) Resume(ctx context.Context, id int64) error {
 	return s.store.AddEvent(ctx, id, "info", "resumed")
 }
 
+func (s *Service) removeEngineTask(ctx context.Context, gid string) error {
+	if s.downloader == nil || strings.TrimSpace(gid) == "" {
+		return nil
+	}
+	if err := s.downloader.Remove(ctx, gid); err != nil {
+		if errors.Is(err, downloadclient.ErrGIDNotFound) {
+			return nil
+		}
+		if errors.Is(err, downloadclient.ErrActionNotAllowed) {
+			return fmt.Errorf("%w: %v", ErrActionNotAllowed, err)
+		}
+		return err
+	}
+	return nil
+}
+
 // JobView is a light view for API/CLI.
 type JobView struct {
 	ID            int64  `json:"id"`
@@ -225,7 +254,7 @@ func toView(j Job) JobView {
 }
 
 var _ interface {
-	CreateJob(context.Context, string, string, string, string, int) (int64, error)
+	CreateJob(context.Context, string, string, string, string, string, int) (int64, error)
 	ListJobs(context.Context, string, bool) ([]JobView, error)
 	GetJob(context.Context, int64) (*JobView, error)
 	ListEvents(context.Context, int64, int) ([]string, error)
@@ -236,3 +265,10 @@ var _ interface {
 	Pause(context.Context, int64) error
 	Resume(context.Context, int64) error
 } = (*Service)(nil)
+
+func sqlNullString(v string) sql.NullString {
+	if v == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: v, Valid: true}
+}

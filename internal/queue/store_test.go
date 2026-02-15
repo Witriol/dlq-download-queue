@@ -27,11 +27,12 @@ func TestStoreRequeueClearsFields(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 	job := &Job{
-		URL:         "https://example.com/file",
-		OutDir:      "/data",
-		Name:        "file.bin",
-		Site:        "http",
-		MaxAttempts: 3,
+		URL:             "https://example.com/file",
+		OutDir:          "/data",
+		Name:            "file.bin",
+		Site:            "http",
+		ArchivePassword: sqlNullString("pass-1"),
+		MaxAttempts:     3,
 	}
 	id, err := store.CreateJob(ctx, job)
 	if err != nil {
@@ -70,6 +71,9 @@ func TestStoreRequeueClearsFields(t *testing.T) {
 	}
 	if updated.BytesDone != 0 {
 		t.Fatalf("expected bytes_done to be reset, got %d", updated.BytesDone)
+	}
+	if !updated.ArchivePassword.Valid || updated.ArchivePassword.String != "pass-1" {
+		t.Fatalf("expected archive password to persist")
 	}
 }
 
@@ -186,5 +190,99 @@ func TestMarkFailedLogsMaxAttempts(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected max attempts event to be logged")
+	}
+}
+
+func TestListPendingArchiveDecryptAndClear(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	withPassID, err := store.CreateJob(ctx, &Job{
+		URL:             "https://example.com/a.zip",
+		OutDir:          "/data",
+		Name:            "a.zip",
+		ArchivePassword: sqlNullString("pw-a"),
+		MaxAttempts:     1,
+	})
+	if err != nil {
+		t.Fatalf("create job with password: %v", err)
+	}
+	if err := store.MarkCompleted(ctx, withPassID); err != nil {
+		t.Fatalf("mark completed with password: %v", err)
+	}
+
+	decryptingID, err := store.CreateJob(ctx, &Job{
+		URL:             "https://example.com/c.zip",
+		OutDir:          "/data",
+		Name:            "c.zip",
+		ArchivePassword: sqlNullString("pw-c"),
+		MaxAttempts:     1,
+	})
+	if err != nil {
+		t.Fatalf("create decrypting job: %v", err)
+	}
+	if err := store.MarkDecrypting(ctx, decryptingID, 11); err != nil {
+		t.Fatalf("mark decrypting: %v", err)
+	}
+
+	noPassID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/b.zip",
+		OutDir:      "/data",
+		Name:        "b.zip",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create job without password: %v", err)
+	}
+	if err := store.MarkCompleted(ctx, noPassID); err != nil {
+		t.Fatalf("mark completed without password: %v", err)
+	}
+
+	nonArchiveID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/d.txt",
+		OutDir:      "/data",
+		Name:        "d.txt",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create non-archive job: %v", err)
+	}
+	if err := store.MarkCompleted(ctx, nonArchiveID); err != nil {
+		t.Fatalf("mark completed non-archive: %v", err)
+	}
+
+	pending, err := store.ListPendingArchiveDecrypt(ctx, 0)
+	if err != nil {
+		t.Fatalf("list pending archive decrypt: %v", err)
+	}
+	if len(pending) != 3 {
+		t.Fatalf("expected 3 pending jobs, got %+v", pending)
+	}
+	ids := map[int64]bool{
+		withPassID:   false,
+		decryptingID: false,
+		noPassID:     false,
+	}
+	for _, j := range pending {
+		if _, ok := ids[j.ID]; ok {
+			ids[j.ID] = true
+		}
+		if j.ID == nonArchiveID {
+			t.Fatalf("expected non-archive job %d to be excluded from pending list", nonArchiveID)
+		}
+	}
+	if !ids[withPassID] || !ids[decryptingID] || !ids[noPassID] {
+		t.Fatalf("expected jobs %d, %d, and %d in pending list, got %+v", withPassID, decryptingID, noPassID, pending)
+	}
+
+	if err := store.ClearArchivePassword(ctx, withPassID); err != nil {
+		t.Fatalf("clear archive password: %v", err)
+	}
+	updated, err := store.GetJob(ctx, withPassID)
+	if err != nil {
+		t.Fatalf("get updated job: %v", err)
+	}
+	if updated.ArchivePassword.Valid {
+		t.Fatalf("expected archive password to be cleared")
 	}
 }

@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   site TEXT,
   out_dir TEXT NOT NULL,
   name TEXT,
+  archive_password TEXT,
   resolved_url TEXT,
   filename TEXT,
   size_bytes INTEGER,
@@ -77,6 +78,10 @@ func Open(path string) (*sql.DB, error) {
 		return nil, err
 	}
 	if err := ensureColumn(ctx, db, "eta_seconds", "INTEGER"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureColumn(ctx, db, "archive_password", "TEXT"); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

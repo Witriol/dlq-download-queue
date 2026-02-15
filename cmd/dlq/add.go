@@ -14,14 +14,14 @@ func cmdAdd(args []string) {
 			return
 		}
 	}
-	urls, outDir, name, site, api, err := parseAddArgs(args)
+	urls, outDir, name, site, archivePassword, api, err := parseAddArgs(args)
 	if err != nil {
 		fmt.Println("error:", err)
-		fmt.Println("usage: dlq add <url> [<url2> ...] --out /data/downloads [--name optional]")
+		fmt.Println("usage: dlq add <url> [<url2> ...] --out /data/downloads [--name optional] [--archive-password batch-pass]")
 		return
 	}
 	if len(urls) == 0 || outDir == "" {
-		fmt.Println("usage: dlq add <url> [<url2> ...] --out /data/downloads [--name optional]")
+		fmt.Println("usage: dlq add <url> [<url2> ...] --out /data/downloads [--name optional] [--archive-password batch-pass]")
 		return
 	}
 	if len(urls) > 1 && name != "" {
@@ -31,10 +31,11 @@ func cmdAdd(args []string) {
 	hadErr := false
 	for _, urlStr := range urls {
 		payload := map[string]any{
-			"url":     urlStr,
-			"out_dir": outDir,
-			"name":    name,
-			"site":    site,
+			"url":              urlStr,
+			"out_dir":          outDir,
+			"name":             name,
+			"site":             site,
+			"archive_password": archivePassword,
 		}
 		var resp map[string]any
 		if err := postJSON(api+"/jobs", payload, &resp); err != nil {
@@ -49,7 +50,7 @@ func cmdAdd(args []string) {
 	}
 }
 
-func parseAddArgs(args []string) (urls []string, outDir, name, site string, api string, err error) {
+func parseAddArgs(args []string) (urls []string, outDir, name, site, archivePassword string, api string, err error) {
 	api = apiBase()
 	var files []string
 	useStdin := false
@@ -69,7 +70,7 @@ func parseAddArgs(args []string) (urls []string, outDir, name, site string, api 
 				val = args[i+1]
 				i++
 			} else {
-				return nil, "", "", "", "", fmt.Errorf("missing value for %s", key)
+				return nil, "", "", "", "", "", fmt.Errorf("missing value for %s", key)
 			}
 			switch key {
 			case "--out":
@@ -78,12 +79,16 @@ func parseAddArgs(args []string) (urls []string, outDir, name, site string, api 
 				name = val
 			case "--site":
 				site = val
+			case "--archive-password":
+				archivePassword = val
+			case "--password":
+				archivePassword = val
 			case "--api":
 				api = val
 			case "--file":
 				files = append(files, val)
 			default:
-				return nil, "", "", "", "", fmt.Errorf("unknown flag %s", key)
+				return nil, "", "", "", "", "", fmt.Errorf("unknown flag %s", key)
 			}
 			continue
 		}
@@ -92,23 +97,23 @@ func parseAddArgs(args []string) (urls []string, outDir, name, site string, api 
 	if useStdin {
 		stdinURLs, err := readURLs(os.Stdin)
 		if err != nil {
-			return nil, "", "", "", "", err
+			return nil, "", "", "", "", "", err
 		}
 		urls = append(urls, stdinURLs...)
 	}
 	for _, path := range files {
 		f, err := os.Open(path)
 		if err != nil {
-			return nil, "", "", "", "", err
+			return nil, "", "", "", "", "", err
 		}
 		fileURLs, err := readURLs(f)
 		_ = f.Close()
 		if err != nil {
-			return nil, "", "", "", "", err
+			return nil, "", "", "", "", "", err
 		}
 		urls = append(urls, fileURLs...)
 	}
-	return urls, outDir, name, site, api, nil
+	return urls, outDir, name, site, archivePassword, api, nil
 }
 
 func readURLs(r *os.File) ([]string, error) {

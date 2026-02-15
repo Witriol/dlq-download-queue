@@ -19,7 +19,7 @@ import (
 const maxRequestBodyBytes = 1 << 20
 
 type Queue interface {
-	CreateJob(ctx context.Context, url, outDir, name, site string, maxAttempts int) (int64, error)
+	CreateJob(ctx context.Context, url, outDir, name, site, archivePassword string, maxAttempts int) (int64, error)
 	ListJobs(ctx context.Context, status string, includeDeleted bool) ([]JobView, error)
 	GetJob(ctx context.Context, id int64) (*JobView, error)
 	ListEvents(ctx context.Context, id int64, limit int) ([]string, error)
@@ -70,11 +70,12 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 }
 
 type addJobRequest struct {
-	URL         string `json:"url"`
-	OutDir      string `json:"out_dir"`
-	Name        string `json:"name"`
-	Site        string `json:"site"`
-	MaxAttempts int    `json:"max_attempts"`
+	URL             string `json:"url"`
+	OutDir          string `json:"out_dir"`
+	Name            string `json:"name"`
+	Site            string `json:"site"`
+	ArchivePassword string `json:"archive_password"`
+	MaxAttempts     int    `json:"max_attempts"`
 }
 
 func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
@@ -109,12 +110,13 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 				maxAttempts = v
 			}
 		}
-		id, err := s.Queue.CreateJob(r.Context(), req.URL, req.OutDir, req.Name, req.Site, maxAttempts)
+		id, err := s.Queue.CreateJob(r.Context(), req.URL, req.OutDir, req.Name, req.Site, req.ArchivePassword, maxAttempts)
 		if err != nil {
 			writeQueueErr(w, err)
 			return
 		}
-		log.Printf("action=add id=%d url=%q out=%q name=%q site=%q max_attempts=%d", id, req.URL, req.OutDir, req.Name, req.Site, maxAttempts)
+		log.Printf("action=add id=%d url=%q out=%q name=%q site=%q archive_password_set=%t max_attempts=%d",
+			id, req.URL, req.OutDir, req.Name, req.Site, strings.TrimSpace(req.ArchivePassword) != "", maxAttempts)
 		writeJSON(w, http.StatusOK, map[string]any{"id": id})
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)

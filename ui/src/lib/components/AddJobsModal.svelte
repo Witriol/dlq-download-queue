@@ -2,6 +2,7 @@
   export let show = false;
   export let addOutDir = '';
   export let addUrlsText = '';
+  export let addArchivePassword = '';
   export let outDirPlaceholder = 'Select a preset or type a path';
   export let outDirPresets = [];
   export let parsedUrlCount = 0;
@@ -64,6 +65,16 @@
       <div>
         <label for="add-urls">URLs</label>
         <textarea id="add-urls" bind:value={addUrlsText} placeholder="https://...\nhttps://..."></textarea>
+      </div>
+      <div>
+        <label for="add-archive-password">Archive Password for This Batch (optional)</label>
+        <input
+          id="add-archive-password"
+          type="text"
+          bind:value={addArchivePassword}
+          placeholder="One password for all links in this batch"
+          autocomplete="off"
+        />
       </div>
       <div class="badge">
         URLs: {parsedUrlCount}

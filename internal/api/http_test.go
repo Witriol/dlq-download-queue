@@ -38,7 +38,7 @@ type stubQueue struct {
 	pauseErr error
 }
 
-func (q *stubQueue) CreateJob(ctx context.Context, url, outDir, name, site string, maxAttempts int) (int64, error) {
+func (q *stubQueue) CreateJob(ctx context.Context, url, outDir, name, site, archivePassword string, maxAttempts int) (int64, error) {
 	return 0, nil
 }
 

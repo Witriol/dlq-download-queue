@@ -42,6 +42,7 @@ export async function addJob(payload: {
   out_dir: string;
   name?: string;
   site?: string;
+  archive_password?: string;
   max_attempts?: number;
 }): Promise<{ id: number }> {
   return requestJson<{ id: number }>('/api/jobs', {
@@ -57,6 +58,7 @@ export async function addJobsBatch(
   out_dir: string;
   name?: string;
   site?: string;
+  archive_password?: string;
   max_attempts?: number;
 },
   siteResolver?: (url: string) => string | undefined
@@ -70,6 +72,7 @@ export async function addJobsBatch(
         out_dir: payload.out_dir,
         name: payload.name,
         site: resolvedSite,
+        archive_password: payload.archive_password,
         max_attempts: payload.max_attempts
       });
       results.push({ url, ok: true, id: resp.id });
@@ -101,14 +104,14 @@ export async function getMeta(): Promise<Meta> {
   return requestJson<Meta>('/api/meta');
 }
 
-export async function getSettings(): Promise<{ concurrency: number; max_attempts: number }> {
-  return requestJson<{ concurrency: number; max_attempts: number }>('/api/settings');
+export async function getSettings(): Promise<{ concurrency: number; max_attempts: number; auto_decrypt: boolean }> {
+  return requestJson<{ concurrency: number; max_attempts: number; auto_decrypt: boolean }>('/api/settings');
 }
 
 export async function updateSettings(
-  updates: { concurrency?: number; max_attempts?: number }
-): Promise<{ concurrency: number; max_attempts: number }> {
-  return requestJson<{ concurrency: number; max_attempts: number }>('/api/settings', {
+  updates: { concurrency?: number; max_attempts?: number; auto_decrypt?: boolean }
+): Promise<{ concurrency: number; max_attempts: number; auto_decrypt: boolean }> {
+  return requestJson<{ concurrency: number; max_attempts: number; auto_decrypt: boolean }>('/api/settings', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(updates)

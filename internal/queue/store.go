@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -14,36 +15,39 @@ const (
 	StatusResolving   = "resolving"
 	StatusDownloading = "downloading"
 	StatusPaused      = "paused"
+	StatusDecrypting  = "decrypting"
+	StatusDecryptFail = "decrypt_failed"
 	StatusCompleted   = "completed"
 	StatusFailed      = "failed"
 	StatusDeleted     = "deleted"
 )
 
 type Job struct {
-	ID            int64
-	URL           string
-	Site          string
-	OutDir        string
-	Name          string
-	ResolvedURL   sql.NullString
-	Filename      sql.NullString
-	SizeBytes     sql.NullInt64
-	BytesDone     int64
-	DownloadSpeed sql.NullInt64
-	EtaSeconds    sql.NullInt64
-	Status        string
-	Error         sql.NullString
-	ErrorCode     sql.NullString
-	Engine        string
-	EngineGID     sql.NullString
-	Attempts      int
-	MaxAttempts   int
-	NextRetryAt   sql.NullString
-	CreatedAt     string
-	UpdatedAt     string
-	StartedAt     sql.NullString
-	CompletedAt   sql.NullString
-	DeletedAt     sql.NullString
+	ID              int64
+	URL             string
+	Site            string
+	OutDir          string
+	Name            string
+	ArchivePassword sql.NullString
+	ResolvedURL     sql.NullString
+	Filename        sql.NullString
+	SizeBytes       sql.NullInt64
+	BytesDone       int64
+	DownloadSpeed   sql.NullInt64
+	EtaSeconds      sql.NullInt64
+	Status          string
+	Error           sql.NullString
+	ErrorCode       sql.NullString
+	Engine          string
+	EngineGID       sql.NullString
+	Attempts        int
+	MaxAttempts     int
+	NextRetryAt     sql.NullString
+	CreatedAt       string
+	UpdatedAt       string
+	StartedAt       sql.NullString
+	CompletedAt     sql.NullString
+	DeletedAt       sql.NullString
 }
 
 // Store wraps DB access for jobs and events.
@@ -58,9 +62,9 @@ func NewStore(db *sql.DB) *Store {
 func (s *Store) CreateJob(ctx context.Context, j *Job) (int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	res, err := s.db.ExecContext(ctx, `
-INSERT INTO jobs (url, site, out_dir, name, status, created_at, updated_at, max_attempts)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-`, j.URL, j.Site, j.OutDir, j.Name, StatusQueued, now, now, j.MaxAttempts)
+INSERT INTO jobs (url, site, out_dir, name, archive_password, status, created_at, updated_at, max_attempts)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, j.URL, j.Site, j.OutDir, j.Name, nullStringValue(j.ArchivePassword), StatusQueued, now, now, j.MaxAttempts)
 	if err != nil {
 		return 0, err
 	}
@@ -73,13 +77,13 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 
 func (s *Store) GetJob(ctx context.Context, id int64) (*Job, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, url, site, out_dir, name, resolved_url, filename, size_bytes, bytes_done, download_speed, eta_seconds, status, error, error_code,
+SELECT id, url, site, out_dir, name, archive_password, resolved_url, filename, size_bytes, bytes_done, download_speed, eta_seconds, status, error, error_code,
        engine, engine_gid, attempts, max_attempts, next_retry_at, created_at, updated_at, started_at, completed_at, deleted_at
 FROM jobs WHERE id = ?
 `, id)
 	var j Job
 	err := row.Scan(
-		&j.ID, &j.URL, &j.Site, &j.OutDir, &j.Name, &j.ResolvedURL, &j.Filename, &j.SizeBytes, &j.BytesDone, &j.DownloadSpeed, &j.EtaSeconds,
+		&j.ID, &j.URL, &j.Site, &j.OutDir, &j.Name, &j.ArchivePassword, &j.ResolvedURL, &j.Filename, &j.SizeBytes, &j.BytesDone, &j.DownloadSpeed, &j.EtaSeconds,
 		&j.Status, &j.Error, &j.ErrorCode, &j.Engine, &j.EngineGID, &j.Attempts, &j.MaxAttempts,
 		&j.NextRetryAt, &j.CreatedAt, &j.UpdatedAt, &j.StartedAt, &j.CompletedAt, &j.DeletedAt,
 	)
@@ -91,7 +95,7 @@ FROM jobs WHERE id = ?
 
 func (s *Store) ListJobs(ctx context.Context, status string, includeDeleted bool) ([]Job, error) {
 	query := `
-SELECT id, url, site, out_dir, name, resolved_url, filename, size_bytes, bytes_done, download_speed, eta_seconds, status, error, error_code,
+SELECT id, url, site, out_dir, name, archive_password, resolved_url, filename, size_bytes, bytes_done, download_speed, eta_seconds, status, error, error_code,
        engine, engine_gid, attempts, max_attempts, next_retry_at, created_at, updated_at, started_at, completed_at, deleted_at
 FROM jobs`
 	args := []any{}
@@ -116,7 +120,61 @@ FROM jobs`
 	for rows.Next() {
 		var j Job
 		if err := rows.Scan(
-			&j.ID, &j.URL, &j.Site, &j.OutDir, &j.Name, &j.ResolvedURL, &j.Filename, &j.SizeBytes, &j.BytesDone, &j.DownloadSpeed, &j.EtaSeconds,
+			&j.ID, &j.URL, &j.Site, &j.OutDir, &j.Name, &j.ArchivePassword, &j.ResolvedURL, &j.Filename, &j.SizeBytes, &j.BytesDone, &j.DownloadSpeed, &j.EtaSeconds,
+			&j.Status, &j.Error, &j.ErrorCode, &j.Engine, &j.EngineGID, &j.Attempts, &j.MaxAttempts,
+			&j.NextRetryAt, &j.CreatedAt, &j.UpdatedAt, &j.StartedAt, &j.CompletedAt, &j.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
+// ListPendingArchiveDecrypt returns jobs waiting for archive decrypt processing.
+func (s *Store) ListPendingArchiveDecrypt(ctx context.Context, limit int) ([]Job, error) {
+	query := `
+SELECT id, url, site, out_dir, name, archive_password, resolved_url, filename, size_bytes, bytes_done, download_speed, eta_seconds, status, error, error_code,
+       engine, engine_gid, attempts, max_attempts, next_retry_at, created_at, updated_at, started_at, completed_at, deleted_at
+FROM jobs
+WHERE deleted_at IS NULL
+  AND (
+    status = ?
+    OR (
+      status = ?
+      AND (
+        LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.zip'
+        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.7z'
+        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.rar'
+        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.tar'
+        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.tar.gz'
+        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.tgz'
+        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.tar.bz2'
+        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.tbz2'
+        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.tar.xz'
+        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.txz'
+        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.gz'
+        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.bz2'
+        OR LOWER(COALESCE(NULLIF(TRIM(filename), ''), NULLIF(TRIM(name), ''))) LIKE '%.xz'
+      )
+    )
+  )
+ORDER BY id ASC`
+	args := []any{StatusDecrypting, StatusCompleted}
+	if limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Job
+	for rows.Next() {
+		var j Job
+		if err := rows.Scan(
+			&j.ID, &j.URL, &j.Site, &j.OutDir, &j.Name, &j.ArchivePassword, &j.ResolvedURL, &j.Filename, &j.SizeBytes, &j.BytesDone, &j.DownloadSpeed, &j.EtaSeconds,
 			&j.Status, &j.Error, &j.ErrorCode, &j.Engine, &j.EngineGID, &j.Attempts, &j.MaxAttempts,
 			&j.NextRetryAt, &j.CreatedAt, &j.UpdatedAt, &j.StartedAt, &j.CompletedAt, &j.DeletedAt,
 		); err != nil {
@@ -132,6 +190,9 @@ func (s *Store) AddEvent(ctx context.Context, jobID int64, level, msg string) er
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO job_events (job_id, level, message, created_at) VALUES (?, ?, ?, ?)
 `, jobID, level, msg, now)
+	if err == nil {
+		log.Printf("job_event id=%d level=%s message=%q", jobID, level, msg)
+	}
 	return err
 }
 
@@ -196,7 +257,7 @@ func (s *Store) ClaimNextQueued(ctx context.Context) (*Job, error) {
 			return nil, err
 		}
 		row := tx.QueryRowContext(ctx, `
-SELECT id, url, site, out_dir, name, resolved_url, filename, size_bytes, bytes_done, status, error, error_code,
+SELECT id, url, site, out_dir, name, archive_password, resolved_url, filename, size_bytes, bytes_done, status, error, error_code,
        download_speed, eta_seconds, engine, engine_gid, attempts, max_attempts, next_retry_at, created_at, updated_at, started_at, completed_at, deleted_at
 FROM jobs
 WHERE status = ? AND deleted_at IS NULL AND (next_retry_at IS NULL OR next_retry_at <= ?)
@@ -205,7 +266,7 @@ LIMIT 1
 `, StatusQueued, now)
 		var j Job
 		if err := row.Scan(
-			&j.ID, &j.URL, &j.Site, &j.OutDir, &j.Name, &j.ResolvedURL, &j.Filename, &j.SizeBytes, &j.BytesDone,
+			&j.ID, &j.URL, &j.Site, &j.OutDir, &j.Name, &j.ArchivePassword, &j.ResolvedURL, &j.Filename, &j.SizeBytes, &j.BytesDone,
 			&j.Status, &j.Error, &j.ErrorCode, &j.DownloadSpeed, &j.EtaSeconds, &j.Engine, &j.EngineGID, &j.Attempts, &j.MaxAttempts,
 			&j.NextRetryAt, &j.CreatedAt, &j.UpdatedAt, &j.StartedAt, &j.CompletedAt, &j.DeletedAt,
 		); err != nil {
@@ -294,6 +355,49 @@ SET status = ?,
     completed_at = ?
 WHERE id = ?
 `, StatusCompleted, now, now, id)
+	return err
+}
+
+func (s *Store) MarkDecrypting(ctx context.Context, id int64, bytesDone int64) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx, `
+UPDATE jobs
+SET status = ?,
+    bytes_done = CASE
+      WHEN ? > 0 THEN ?
+      ELSE bytes_done
+    END,
+    download_speed = 0,
+    eta_seconds = NULL,
+    error = NULL,
+    error_code = NULL,
+    updated_at = ?
+WHERE id = ?
+`, StatusDecrypting, bytesDone, bytesDone, now, id)
+	return err
+}
+
+func (s *Store) MarkDecryptFailed(ctx context.Context, id int64, msg string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx, `
+UPDATE jobs
+SET status = ?,
+    error = ?,
+    error_code = ?,
+    download_speed = 0,
+    eta_seconds = NULL,
+    updated_at = ?,
+    completed_at = COALESCE(completed_at, ?)
+WHERE id = ?
+`, StatusDecryptFail, msg, "archive_decrypt_failed", now, now, id)
+	return err
+}
+
+func (s *Store) ClearArchivePassword(ctx context.Context, id int64) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx, `
+UPDATE jobs SET archive_password = NULL, updated_at = ? WHERE id = ?
+`, now, id)
 	return err
 }
 
@@ -388,4 +492,11 @@ func (s *Store) ClearAll(ctx context.Context) error {
 		}
 	}
 	return tx.Commit()
+}
+
+func nullStringValue(v sql.NullString) any {
+	if v.Valid {
+		return v.String
+	}
+	return nil
 }
