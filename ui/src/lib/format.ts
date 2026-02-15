@@ -62,7 +62,7 @@ export function folderPath(job: JobView): string {
 export function formatProgress(job: JobView): string {
   const total = job.size_bytes ?? 0;
   let done = job.bytes_done ?? 0;
-  if (done === 0 && job.status === 'completed' && total > 0) {
+  if (done === 0 && (job.status === 'completed' || job.status === 'decrypting' || job.status === 'decrypt_failed') && total > 0) {
     done = total;
   }
   if (total <= 0) {

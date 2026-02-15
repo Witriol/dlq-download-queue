@@ -1,6 +1,7 @@
 <script>
   export let show = false;
   export let settingsConcurrency = 2;
+  export let settingsAutoDecrypt = true;
   export let settingsError = '';
   export let settingsSaving = false;
 
@@ -37,6 +38,12 @@
         <label for="settings-concurrency">Concurrency (1-10)</label>
         <input id="settings-concurrency" type="number" min="1" max="10" bind:value={settingsConcurrency} />
         <p class="notice">Number of concurrent downloads</p>
+      </div>
+      <div>
+        <label class="small" for="settings-auto-decrypt">
+          <input id="settings-auto-decrypt" type="checkbox" bind:checked={settingsAutoDecrypt} />
+          auto decrypt archives after download
+        </label>
       </div>
       <div class="actions">
         <button class="btn primary" on:click={onSave} disabled={settingsSaving}>

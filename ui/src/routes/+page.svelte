@@ -10,7 +10,7 @@
   import SettingsModal from '$lib/components/SettingsModal.svelte';
   import BrowserModal from '$lib/components/BrowserModal.svelte';
 
-  const statusOptions = ['', 'queued', 'resolving', 'downloading', 'paused', 'completed', 'failed', 'deleted'];
+  const statusOptions = ['', 'queued', 'resolving', 'downloading', 'paused', 'decrypting', 'completed', 'failed', 'decrypt_failed', 'deleted'];
 
   let jobs = [];
   let lastError = '';
@@ -27,6 +27,7 @@
 
   let addOutDir = '';
   let addUrlsText = '';
+  let addArchivePassword = '';
   let addResults = [];
   let addErrors = [];
   let adding = false;
@@ -48,6 +49,7 @@
 
   let showSettings = false;
   let settingsConcurrency = 2;
+  let settingsAutoDecrypt = true;
   let settingsError = '';
   let settingsSaving = false;
 
@@ -61,7 +63,8 @@
   let browserNewFolderName = '';
 
   $: counts = countsFor(jobs);
-  $: activeCount = counts.queued + counts.resolving + counts.downloading + counts.paused;
+  $: activeCount = counts.queued + counts.resolving + counts.downloading + counts.paused + counts.decrypting;
+  $: failedCount = counts.failed + counts.decrypt_failed;
   $: totalSpeed = jobs.reduce((sum, job) => {
     if (job.status !== 'downloading') return sum;
     return sum + (job.download_speed ?? 0);
@@ -121,12 +124,14 @@
     adding = true;
     addResults = await addJobsBatch({
       urls,
-      out_dir: addOutDir
+      out_dir: addOutDir,
+      archive_password: addArchivePassword || undefined
     }, (url) => detectSite(url) || undefined);
     adding = false;
     await refresh();
     if (addResults.every((r) => r.ok)) {
       addUrlsText = '';
+      addArchivePassword = '';
       addResults = [];
       showAdd = false;
     }
@@ -227,6 +232,7 @@
     try {
       const settings = await getSettings();
       settingsConcurrency = settings.concurrency;
+      settingsAutoDecrypt = settings.auto_decrypt;
     } catch (err) {
       settingsError = err instanceof Error ? err.message : String(err);
     }
@@ -236,8 +242,12 @@
     settingsError = '';
     settingsSaving = true;
     try {
-      const updated = await updateSettings({ concurrency: settingsConcurrency });
+      const updated = await updateSettings({
+        concurrency: settingsConcurrency,
+        auto_decrypt: settingsAutoDecrypt
+      });
       settingsConcurrency = updated.concurrency;
+      settingsAutoDecrypt = updated.auto_decrypt;
       showSettings = false;
     } catch (err) {
       settingsError = err instanceof Error ? err.message : String(err);
@@ -274,7 +284,9 @@
     const newPath = browserPath ? `${browserPath}/${browserNewFolderName}` : `/${browserNewFolderName}`;
     try {
       await mkdir(newPath);
-      await loadBrowser(browserPath);
+      addOutDir = newPath;
+      showBrowser = false;
+      browserNewFolderName = '';
     } catch (err) {
       browserError = err instanceof Error ? err.message : String(err);
     }
@@ -347,7 +359,7 @@
     </div>
     <div class="stat stat-failed">
       <span>Failed</span>
-      <strong>{counts.failed}</strong>
+      <strong>{failedCount}</strong>
     </div>
     <div class="stat stat-speed">
       <span>Total Speed</span>
@@ -386,6 +398,7 @@
   show={showAdd}
   bind:addOutDir
   bind:addUrlsText
+  bind:addArchivePassword
   {outDirPlaceholder}
   {outDirPresets}
   parsedUrlCount={parsedUrls.length}
@@ -422,6 +435,7 @@
 <SettingsModal
   show={showSettings}
   bind:settingsConcurrency
+  bind:settingsAutoDecrypt
   {settingsError}
   {settingsSaving}
   onClose={() => (showSettings = false)}

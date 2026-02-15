@@ -330,8 +330,10 @@ textarea {
 .status[data-status="resolving"] { background: rgba(236, 72, 153, 0.18); border-color: rgba(236, 72, 153, 0.35); color: #fbcfe8; }
 .status[data-status="downloading"] { background: rgba(34, 197, 94, 0.18); border-color: rgba(34, 197, 94, 0.35); color: #bbf7d0; }
 .status[data-status="paused"] { background: rgba(245, 158, 11, 0.2); border-color: rgba(245, 158, 11, 0.35); color: #fde68a; }
+.status[data-status="decrypting"] { background: rgba(20, 184, 166, 0.2); border-color: rgba(20, 184, 166, 0.35); color: #99f6e4; }
 .status[data-status="completed"] { background: rgba(56, 189, 248, 0.2); border-color: rgba(56, 189, 248, 0.35); color: #bae6fd; }
 .status[data-status="failed"] { background: rgba(248, 113, 113, 0.2); border-color: rgba(248, 113, 113, 0.35); color: #fecaca; }
+.status[data-status="decrypt_failed"] { background: rgba(244, 63, 94, 0.2); border-color: rgba(244, 63, 94, 0.35); color: #fecdd3; }
 .status[data-status="deleted"] { background: rgba(148, 163, 184, 0.2); border-color: rgba(148, 163, 184, 0.35); color: #e2e8f0; }
 
 .form-grid {
@@ -581,6 +583,9 @@ input[type="checkbox"]:checked::before {
 .browser-dialog {
   display: flex;
   flex-direction: column;
+  width: min(920px, calc(100vw - 40px));
+  max-height: calc(100vh - 40px);
+  min-height: min(760px, calc(100vh - 56px));
 }
 
 .browser-body {
@@ -601,7 +606,7 @@ input[type="checkbox"]:checked::before {
 
 .browser-list {
   flex: 1;
-  min-height: 260px;
+  min-height: 430px;
   width: 100%;
 }
 

@@ -93,7 +93,7 @@
                   {#if job.status === 'paused'}
                     <button class="btn" on:click={() => onJobAction(job.id, 'resume')}>Resume</button>
                   {/if}
-                  {#if job.status === 'failed'}
+                  {#if job.status === 'failed' || job.status === 'decrypt_failed'}
                     <button class="btn" on:click={() => onJobAction(job.id, 'retry')}>Retry</button>
                   {/if}
                   <button class="btn ghost" on:click={() => onOpenLogs(job)}>Logs</button>

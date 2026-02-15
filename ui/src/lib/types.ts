@@ -3,6 +3,8 @@ export type JobStatus =
   | 'resolving'
   | 'downloading'
   | 'paused'
+  | 'decrypting'
+  | 'decrypt_failed'
   | 'completed'
   | 'failed'
   | 'deleted';

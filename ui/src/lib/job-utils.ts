@@ -37,6 +37,8 @@ export function countsFor(list: JobView[]): Record<JobStatus, number> {
     resolving: 0,
     downloading: 0,
     paused: 0,
+    decrypting: 0,
+    decrypt_failed: 0,
     completed: 0,
     failed: 0,
     deleted: 0
