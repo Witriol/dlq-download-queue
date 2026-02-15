@@ -26,6 +26,7 @@ Minimal headless download-queue daemon + CLI inspired by JDownloader, designed f
 
 - Persistent SQLite-backed job queue with retries, pause/resume, and soft delete
 - Aria2-powered downloads with progress, speed, and ETA reporting
+- Optional automatic archive decrypt/extract after download completion
 - Pluggable URL resolvers (Webshare anonymous mode, HTTP/HTTPS passthrough)
 - CLI for scripting and automation (`dlq add`, `dlq status --watch`, ...)
 - Optional SvelteKit web UI with batch add, folder browser, and live dashboard
@@ -112,11 +113,11 @@ If you change the port, set `DLQ_HTTP_PORT` to match.
 
 ![CLI status output](docs/cli-01.jpg)
 
-- `dlq add <url> [<url2> ...] --out /data/downloads [--name optional] [--site mega|webshare|http|https]`
+- `dlq add <url> [<url2> ...] --out /data/downloads [--name optional] [--site mega|webshare|http|https] [--archive-password batch-pass]`
 - `dlq add --file urls.txt --out /data/downloads`
 - `dlq add --stdin --out /data/downloads`
 - `dlq status` (summary + table)
-- `dlq status --watch [--interval 1] [--status queued|resolving|downloading|paused|completed|failed|deleted]`
+- `dlq status --watch [--interval 1] [--status queued|resolving|downloading|paused|decrypting|completed|failed|decrypt_failed|deleted]`
 - `dlq files` (shows all jobs in DB, including soft-deleted)
 - `dlq logs <job_id> [--tail 50]`
 - `dlq retry <job_id>`
@@ -125,7 +126,7 @@ If you change the port, set `DLQ_HTTP_PORT` to match.
 - `dlq remove <job_id>` (soft delete)
 - `dlq clear` (hard delete + reset IDs)
 - `dlq settings` (show current settings)
-- `dlq settings --concurrency <1-10>` (update concurrency)
+- `dlq settings --concurrency <1-10> --auto-decrypt <true|false>` (update settings)
 - `dlq help`
 
 ## UI (SvelteKit)
@@ -183,7 +184,7 @@ Presets for out_dir are served from `GET /meta` and derived from `DATA_*` volume
 | `ARIA2_CONSOLE_LOG_LEVEL` | `warn` | Aria2 console log level |
 | `ARIA2_SHOW_CONSOLE_READOUT` | `false` | Show aria2 console readout |
 
-> **Note:** Concurrency is stored in `settings.json` under `DLQ_STATE_DIR` and can be updated via `dlq settings --concurrency` or the UI. The file is created with the default value on first start.
+> **Note:** `concurrency`, `max_attempts`, and `auto_decrypt` are stored in `settings.json` under `DLQ_STATE_DIR` and can be updated via `dlq settings` or the UI. The file is created with defaults on first start.
 >
 > UI out_dir presets are derived from `DATA_*` env values (container paths); make sure they are passed into the container. All job `out_dir` values must live under one of the `DATA_*` container paths.
 
@@ -200,6 +201,11 @@ DLQ is designed for **trusted networks** (home LAN, Docker internal networking).
 
 - Webshare resolver uses the public API in anonymous mode when possible and forces single-connection downloads for reliability.
 - MEGA resolver supports public file links (`mega.nz/file/...`) by resolving them to MEGA's temporary download URL.
+- Auto decrypt/extract runs after successful download for archive extensions (`.zip`, `.rar`, `.7z`, `.tar*`, `.gz`, `.bz2`, `.xz`) when `auto_decrypt=true` in settings.
+- Pass `--archive-password` in `dlq add` (or `archive_password` in API/UI) for password-protected archives in that add batch.
+- DLQ tries `7zz` first; if needed (unsupported/open-as-archive RAR errors, or missing `7zz` binary) it automatically retries with `unar`.
+- One add batch uses one password for all links; for different passwords, add links in separate batches.
+- If decrypt/extract fails (missing/wrong password, tool error), the job moves to `decrypt_failed` and the failure is logged to job events.
 - If aria2 restarts, `dlq resume <id>` will re-queue the job and re-resolve the URL.
 - If you set `PUID`/`PGID`, ensure `/data` and `/state` are writable by that user on the host.
 - If you see `attempt to write a readonly database`, fix permissions on the host (e.g., `chown -R 99:100 /path/to/state`).
