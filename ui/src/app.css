@@ -665,6 +665,16 @@ input[type="checkbox"]:checked::before {
   min-height: min(520px, calc(100vh - 120px));
 }
 
+.modal.add-jobs-dialog {
+  width: min(840px, calc(100vw - 32px));
+  max-height: calc(100vh - 28px);
+  min-height: min(760px, calc(100vh - 40px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 22px 24px;
+}
+
 .modal.modal-logs {
   width: min(1080px, calc(100vw - 40px));
   max-height: calc(100vh - 48px);
@@ -682,6 +692,54 @@ input[type="checkbox"]:checked::before {
   margin-bottom: 12px;
 }
 
+.modal-title {
+  margin: 0;
+}
+
+.add-jobs-dialog .modal-header {
+  margin-bottom: 18px;
+}
+
+.add-jobs-subtitle {
+  margin: 8px 0 0;
+  line-height: 1.45;
+}
+
+.add-jobs-form {
+  gap: 16px;
+}
+
+.add-jobs-form .form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.add-jobs-form .form-field > .actions {
+  gap: 10px;
+}
+
+.add-jobs-form label {
+  display: block;
+}
+
+.add-jobs-form textarea {
+  min-height: 220px;
+}
+
+.add-jobs-count {
+  margin-top: -2px;
+}
+
+.add-jobs-actions {
+  padding-top: 6px;
+  gap: 10px;
+}
+
+.add-jobs-dialog .result-list {
+  max-height: 240px;
+}
+
 .logs-list {
   flex: 1;
   min-height: 500px;
@@ -691,15 +749,16 @@ input[type="checkbox"]:checked::before {
 .browser-dialog {
   display: flex;
   flex-direction: column;
-  width: min(920px, calc(100vw - 40px));
-  max-height: calc(100vh - 40px);
-  min-height: min(760px, calc(100vh - 56px));
+  width: min(960px, calc(100vw - 30px));
+  max-height: calc(100vh - 24px);
+  min-height: min(860px, calc(100vh - 32px));
+  padding: 22px 24px;
 }
 
 .browser-body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
   flex: 1;
   min-height: 0;
 }
@@ -707,14 +766,47 @@ input[type="checkbox"]:checked::before {
 .browser-main {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
   flex: 1;
   min-height: 0;
 }
 
+.browser-search {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.browser-search label {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.browser-search input {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(231, 237, 244, 0.18);
+  padding: 10px 12px;
+  background: rgba(18, 24, 34, 0.8);
+  transition: border 0.2s ease, box-shadow 0.2s ease;
+}
+
+.browser-search input:focus {
+  outline: none;
+  border-color: rgba(20, 184, 166, 0.6);
+  box-shadow: 0 0 0 2px rgba(20, 184, 166, 0.2);
+}
+
+.browser-search-meta {
+  margin: 0;
+  color: var(--muted);
+}
+
 .browser-list {
   flex: 1;
-  min-height: 430px;
+  min-height: 560px;
   width: 100%;
 }
 
@@ -722,7 +814,7 @@ input[type="checkbox"]:checked::before {
   margin-top: auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -745,6 +837,33 @@ input[type="checkbox"]:checked::before {
   .modal.modal-logs {
     width: calc(100vw - 20px);
     min-height: min(620px, calc(100vh - 26px));
+  }
+
+  .modal.add-jobs-dialog {
+    width: calc(100vw - 16px);
+    min-width: 0;
+    max-height: calc(100vh - 14px);
+    min-height: min(620px, calc(100vh - 20px));
+    padding: 16px;
+  }
+
+  .add-jobs-form {
+    gap: 12px;
+  }
+
+  .add-jobs-form textarea {
+    min-height: 180px;
+  }
+
+  .browser-dialog {
+    width: calc(100vw - 16px);
+    max-height: calc(100vh - 14px);
+    min-height: min(680px, calc(100vh - 20px));
+    padding: 16px;
+  }
+
+  .browser-list {
+    min-height: 340px;
   }
 
   .logs-list {

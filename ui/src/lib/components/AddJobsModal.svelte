@@ -34,11 +34,11 @@
     on:click={onClose}
     on:keydown={onBackdropKeydown}
   ></div>
-  <div class="modal panel modal-wide" role="dialog" aria-modal="true">
+  <div class="modal panel modal-wide add-jobs-dialog" role="dialog" aria-modal="true">
     <div class="modal-header">
       <div>
-        <h2 style="margin: 0;">Add Jobs</h2>
-        <p class="notice">Auto-detects site per URL; unsupported URLs will be marked.</p>
+        <h2 class="modal-title">Add Jobs</h2>
+        <p class="notice add-jobs-subtitle">Auto-detects site per URL; unsupported URLs will be marked.</p>
       </div>
       <button class="btn icon-btn close-btn" type="button" aria-label="Close dialog" on:click={onClose}>
         <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -46,8 +46,8 @@
         </svg>
       </button>
     </div>
-    <div class="form-grid">
-      <div>
+    <div class="form-grid add-jobs-form">
+      <div class="form-field">
         <label for="add-out-dir">Out Directory</label>
         <div class="actions">
           <input id="add-out-dir" type="text" placeholder={outDirPlaceholder} bind:value={addOutDir} style="flex: 1;" />
@@ -66,11 +66,11 @@
           </div>
         {/if}
       </div>
-      <div>
+      <div class="form-field">
         <label for="add-urls">URLs</label>
         <textarea id="add-urls" bind:value={addUrlsText} placeholder="https://...\nhttps://..."></textarea>
       </div>
-      <div>
+      <div class="form-field">
         <label for="add-archive-password">Archive Password for This Batch (optional)</label>
         <input
           id="add-archive-password"
@@ -80,10 +80,10 @@
           autocomplete="off"
         />
       </div>
-      <div class="badge">
+      <div class="badge add-jobs-count">
         URLs: {parsedUrlCount}
       </div>
-      <div class="actions">
+      <div class="actions add-jobs-actions">
         <label class="btn ghost">
           Import file(s)
           <input type="file" multiple accept=".txt" style="display: none" on:change={onHandleFiles} />

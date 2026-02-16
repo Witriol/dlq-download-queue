@@ -13,6 +13,18 @@
   export let onCreateFolder = () => {};
   export let onSelectPath = () => {};
 
+  let browserSearch = '';
+  let previousBrowserPath = '';
+
+  $: browserSearchQuery = browserSearch.trim().toLowerCase();
+  $: filteredBrowserDirs = browserSearchQuery
+    ? browserDirs.filter((dir) => dir.toLowerCase().includes(browserSearchQuery))
+    : browserDirs;
+  $: if (browserPath !== previousBrowserPath) {
+    browserSearch = '';
+    previousBrowserPath = browserPath;
+  }
+
   function nextPath(dir) {
     if (dir.startsWith('/')) return dir;
     return browserPath ? `${browserPath}/${dir}` : `/${dir}`;
@@ -61,13 +73,29 @@
           </div>
         {/if}
 
+        <div class="browser-search">
+          <label for="browser-search">Search in This Folder</label>
+          <input
+            id="browser-search"
+            type="text"
+            placeholder="Type folder name..."
+            bind:value={browserSearch}
+            disabled={browserLoading || browserDirs.length === 0}
+          />
+          {#if browserSearchQuery}
+            <p class="small browser-search-meta">Showing {filteredBrowserDirs.length} of {browserDirs.length} folders</p>
+          {/if}
+        </div>
+
         <div class="result-list browser-list">
           {#if browserLoading}
             <div class="result-item">Loading...</div>
           {:else if browserDirs.length === 0}
             <div class="result-item">No subdirectories</div>
+          {:else if filteredBrowserDirs.length === 0}
+            <div class="result-item">No matching folders in this directory</div>
           {:else}
-            {#each browserDirs as dir}
+            {#each filteredBrowserDirs as dir}
               <div class="result-item" style="cursor: pointer;">
                 <button class="btn ghost" on:click={() => onLoadBrowser(nextPath(dir))}>
                   📁 {dir}
