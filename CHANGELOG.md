@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.2 - 2026-02-16
+
+- Reworked Webshare controls to `stop + retry` semantics; Webshare resume now requeues with a fresh link instead of unpausing old transfer state.
+- Added Webshare detection fallback from URL when `site` is missing, so CLI/API jobs without explicit `--site` still use Webshare-specific behavior.
+- Hardened Webshare resolver output for aria2 (`continue=false`, `always-resume=false`, overwrite/no-rename) and added browser-like headers (`Referer`, `User-Agent`).
+- Added safer fresh-start preparation that removes stale `.aria2` state only when no other active job targets the same output path.
+- Updated status/action wording for Webshare paused jobs to user-facing `stopped` across UI, CLI, and daemon action logs.
+- Refined UI table/dialog ergonomics: wider layout, sticky actions column, icon-based actions, larger logs dialog, and consistent `X` close buttons.
+
 ## 0.2.1 - 2026-02-15
 
 - Added MEGA resolver support for public file links (`mega.nz/file/...`), including filename decryption and API error mapping.
