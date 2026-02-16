@@ -137,12 +137,19 @@ func (s *Service) Purge(ctx context.Context) error {
 }
 
 func (s *Service) Pause(ctx context.Context, id int64) error {
-	if s.downloader == nil {
-		return ErrDownloaderNotConfigured
-	}
 	job, err := s.store.GetJob(ctx, id)
 	if err != nil {
 		return err
+	}
+	eventMessage := DisplayStatus(StatusPaused, job.Site, job.URL)
+	if job.Status == StatusQueued || job.Status == StatusResolving {
+		if err := s.store.MarkPaused(ctx, id); err != nil {
+			return err
+		}
+		return s.store.AddEvent(ctx, id, "info", eventMessage)
+	}
+	if s.downloader == nil {
+		return ErrDownloaderNotConfigured
 	}
 	if !job.EngineGID.Valid {
 		return ErrMissingEngineGID
@@ -156,16 +163,27 @@ func (s *Service) Pause(ctx context.Context, id int64) error {
 	if err := s.store.MarkPaused(ctx, id); err != nil {
 		return err
 	}
-	return s.store.AddEvent(ctx, id, "info", "paused")
+	return s.store.AddEvent(ctx, id, "info", eventMessage)
 }
 
 func (s *Service) Resume(ctx context.Context, id int64) error {
-	if s.downloader == nil {
-		return ErrDownloaderNotConfigured
-	}
 	job, err := s.store.GetJob(ctx, id)
 	if err != nil {
 		return err
+	}
+	if IsWebshareJob(job.Site, job.URL) {
+		if job.EngineGID.Valid && s.downloader != nil {
+			if err := s.removeEngineTask(ctx, job.EngineGID.String); err != nil {
+				return err
+			}
+		}
+		if err := s.store.Requeue(ctx, id); err != nil {
+			return err
+		}
+		return s.store.AddEvent(ctx, id, "info", "resume requeued")
+	}
+	if s.downloader == nil {
+		return ErrDownloaderNotConfigured
 	}
 	if !job.EngineGID.Valid {
 		if err := s.store.Requeue(ctx, id); err != nil {

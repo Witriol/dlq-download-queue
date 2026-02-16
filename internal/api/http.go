@@ -189,11 +189,19 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
+		isWebshare := false
+		if job, err := s.Queue.GetJob(r.Context(), id); err == nil && job != nil {
+			isWebshare = queue.IsWebshareJob(job.Site, job.URL)
+		}
 		if err := s.Queue.Pause(r.Context(), id); err != nil {
 			writeQueueErr(w, err)
 			return
 		}
-		log.Printf("action=pause id=%d", id)
+		actionName := "pause"
+		if isWebshare {
+			actionName = "stop"
+		}
+		log.Printf("action=%s id=%d", actionName, id)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	case "resume":
 		if r.Method != http.MethodPost {

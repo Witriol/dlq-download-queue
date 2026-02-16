@@ -59,6 +59,14 @@ func (r *webshareResolver) Resolve(ctx context.Context, rawURL string) (*Resolve
 		Options: map[string]string{
 			"max-connection-per-server": "1",
 			"split":                     "1",
+			"continue":                  "false",
+			"always-resume":             "false",
+			"allow-overwrite":           "true",
+			"auto-file-renaming":        "false",
+		},
+		Headers: map[string]string{
+			"Referer":    "https://webshare.cz/",
+			"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 		},
 		Filename: info.Filename,
 		Size:     info.Size,

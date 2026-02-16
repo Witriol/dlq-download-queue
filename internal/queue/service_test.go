@@ -11,10 +11,12 @@ import (
 )
 
 type serviceTestDownloader struct {
-	pauseErr   error
-	unpauseErr error
-	removeErr  error
-	removeHits int
+	pauseErr    error
+	unpauseErr  error
+	removeErr   error
+	pauseHits   int
+	unpauseHits int
+	removeHits  int
 }
 
 func (d *serviceTestDownloader) AddURI(ctx context.Context, uri string, options map[string]string) (string, error) {
@@ -26,10 +28,12 @@ func (d *serviceTestDownloader) TellStatus(ctx context.Context, gid string) (*do
 }
 
 func (d *serviceTestDownloader) Pause(ctx context.Context, gid string) error {
+	d.pauseHits++
 	return d.pauseErr
 }
 
 func (d *serviceTestDownloader) Unpause(ctx context.Context, gid string) error {
+	d.unpauseHits++
 	return d.unpauseErr
 }
 
@@ -55,6 +59,61 @@ func TestServicePauseMapsActionNotAllowed(t *testing.T) {
 	err = svc.Pause(ctx, id)
 	if !errors.Is(err, ErrActionNotAllowed) {
 		t.Fatalf("expected ErrActionNotAllowed, got %v", err)
+	}
+}
+
+func TestServicePauseMarksQueuedJobPausedWithoutEngineGID(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	id, err := store.CreateJob(ctx, &Job{URL: "https://example.com/file", OutDir: "/data", MaxAttempts: 1})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	svc := NewService(store, &serviceTestDownloader{}, []string{"/data"})
+	if err := svc.Pause(ctx, id); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+
+	job, err := store.GetJob(ctx, id)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if job.Status != StatusPaused {
+		t.Fatalf("expected paused status, got %s", job.Status)
+	}
+}
+
+func TestServicePauseUsesStoppedEventForWebshare(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	id, err := store.CreateJob(ctx, &Job{
+		URL:         "https://webshare.cz/#/file/abcde/test",
+		OutDir:      "/data",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	svc := NewService(store, &serviceTestDownloader{}, []string{"/data"})
+	if err := svc.Pause(ctx, id); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+
+	events, err := store.ListEvents(ctx, id, 10)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	found := false
+	for _, line := range events {
+		if strings.Contains(line, "stopped") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected stopped event for webshare pause, got %v", events)
 	}
 }
 
@@ -108,6 +167,51 @@ func TestServiceResumeRequeuesOnGIDNotFound(t *testing.T) {
 	}
 	if job.BytesDone != 0 {
 		t.Fatalf("expected bytes_done reset after requeue, got %d", job.BytesDone)
+	}
+}
+
+func TestServiceResumeRequeuesWebshareWithoutUnpause(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	id, err := store.CreateJob(ctx, &Job{
+		URL:         "https://webshare.cz/#/file/abcde/test",
+		OutDir:      "/data",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := store.MarkDownloading(ctx, id, "aria2", "gid-1"); err != nil {
+		t.Fatalf("mark downloading: %v", err)
+	}
+	if err := store.MarkPaused(ctx, id); err != nil {
+		t.Fatalf("mark paused: %v", err)
+	}
+	if err := store.UpdateProgress(ctx, id, 42, StatusPaused, 0, 0); err != nil {
+		t.Fatalf("update progress: %v", err)
+	}
+
+	dl := &serviceTestDownloader{}
+	svc := NewService(store, dl, []string{"/data"})
+	if err := svc.Resume(ctx, id); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+
+	if dl.unpauseHits != 0 {
+		t.Fatalf("expected unpause not to be called for webshare resume, got %d", dl.unpauseHits)
+	}
+	if dl.removeHits != 1 {
+		t.Fatalf("expected remove to be called once for webshare resume, got %d", dl.removeHits)
+	}
+	job, err := store.GetJob(ctx, id)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if job.Status != StatusQueued {
+		t.Fatalf("expected queued status after webshare resume requeue, got %s", job.Status)
+	}
+	if job.BytesDone != 0 {
+		t.Fatalf("expected bytes_done reset after webshare resume requeue, got %d", job.BytesDone)
 	}
 }
 

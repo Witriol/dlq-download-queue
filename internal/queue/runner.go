@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"log"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -130,6 +131,12 @@ func (r *Runner) resolveAndStart(ctx context.Context, job *Job) error {
 		}
 		options[k] = v
 	}
+	if outName := sanitizeFilename(options["out"]); outName != "" {
+		if err := r.prepareOutputForStart(ctx, job, outName, options); err != nil {
+			_ = r.Store.AddEvent(ctx, job.ID, "error", "prepare output failed: "+err.Error())
+			return r.Store.MarkFailed(ctx, job.ID, "prepare_output_failed", err.Error(), time.Now().UTC().Add(10*time.Minute))
+		}
+	}
 	if len(res.Headers) > 0 {
 		var b strings.Builder
 		first := true
@@ -151,6 +158,70 @@ func (r *Runner) resolveAndStart(ctx context.Context, job *Job) error {
 	}
 	_ = r.Store.AddEvent(ctx, job.ID, "info", "download started")
 	return r.Store.MarkDownloading(ctx, job.ID, "aria2", gid)
+}
+
+func (r *Runner) prepareOutputForStart(ctx context.Context, job *Job, outName string, options map[string]string) error {
+	if !needsFreshStart(options) {
+		return nil
+	}
+	if r.hasActiveOutputConflict(ctx, job, outName) {
+		return nil
+	}
+	controlPath := filepath.Join(job.OutDir, outName) + ".aria2"
+	if err := os.Remove(controlPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func needsFreshStart(options map[string]string) bool {
+	return strings.EqualFold(strings.TrimSpace(options["continue"]), "false") ||
+		strings.EqualFold(strings.TrimSpace(options["always-resume"]), "false")
+}
+
+func (r *Runner) hasActiveOutputConflict(ctx context.Context, job *Job, outName string) bool {
+	if r.Store == nil || job == nil || outName == "" {
+		return false
+	}
+	jobs, err := r.Store.ListJobs(ctx, "", false)
+	if err != nil {
+		log.Printf("runner output conflict check error for job %d: %v", job.ID, err)
+		return false
+	}
+	for _, other := range jobs {
+		if other.ID == job.ID {
+			continue
+		}
+		if other.OutDir != job.OutDir {
+			continue
+		}
+		if !isOutputConflictActiveStatus(other.Status) {
+			continue
+		}
+		if outputNameForJob(other) == outName {
+			return true
+		}
+	}
+	return false
+}
+
+func isOutputConflictActiveStatus(status string) bool {
+	switch status {
+	case StatusQueued, StatusResolving, StatusDownloading, StatusPaused, StatusDecrypting:
+		return true
+	default:
+		return false
+	}
+}
+
+func outputNameForJob(job Job) string {
+	if name := sanitizeFilename(job.Name); name != "" {
+		return name
+	}
+	if job.Filename.Valid {
+		return sanitizeFilename(job.Filename.String)
+	}
+	return ""
 }
 
 func (r *Runner) requeueFailed(ctx context.Context) error {

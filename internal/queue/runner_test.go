@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -95,6 +96,85 @@ func newRunnerStore(t *testing.T) *Store {
 		_ = conn.Close()
 	})
 	return NewStore(conn)
+}
+
+func TestRunnerPrepareOutputForStartSkipsControlCleanupWhenOutputInUse(t *testing.T) {
+	store := newRunnerStore(t)
+	ctx := context.Background()
+	outDir := t.TempDir()
+
+	activeID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/active",
+		OutDir:      outDir,
+		Name:        "shared.bin",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create active job: %v", err)
+	}
+	if err := store.MarkDownloading(ctx, activeID, "aria2", "gid-active"); err != nil {
+		t.Fatalf("mark active downloading: %v", err)
+	}
+
+	currentID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/current",
+		OutDir:      outDir,
+		Name:        "shared.bin",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create current job: %v", err)
+	}
+	currentJob, err := store.GetJob(ctx, currentID)
+	if err != nil {
+		t.Fatalf("get current job: %v", err)
+	}
+
+	controlPath := filepath.Join(outDir, "shared.bin.aria2")
+	if err := os.WriteFile(controlPath, []byte("state"), 0o644); err != nil {
+		t.Fatalf("write control file: %v", err)
+	}
+
+	runner := &Runner{Store: store}
+	if err := runner.prepareOutputForStart(ctx, currentJob, "shared.bin", map[string]string{"continue": "false"}); err != nil {
+		t.Fatalf("prepare output: %v", err)
+	}
+	if _, err := os.Stat(controlPath); err != nil {
+		t.Fatalf("expected control file to stay in place, stat err: %v", err)
+	}
+}
+
+func TestRunnerPrepareOutputForStartRemovesControlFileWithoutConflict(t *testing.T) {
+	store := newRunnerStore(t)
+	ctx := context.Background()
+	outDir := t.TempDir()
+
+	currentID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/current",
+		OutDir:      outDir,
+		Name:        "solo.bin",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create current job: %v", err)
+	}
+	currentJob, err := store.GetJob(ctx, currentID)
+	if err != nil {
+		t.Fatalf("get current job: %v", err)
+	}
+
+	controlPath := filepath.Join(outDir, "solo.bin.aria2")
+	if err := os.WriteFile(controlPath, []byte("state"), 0o644); err != nil {
+		t.Fatalf("write control file: %v", err)
+	}
+
+	runner := &Runner{Store: store}
+	if err := runner.prepareOutputForStart(ctx, currentJob, "solo.bin", map[string]string{"continue": "false"}); err != nil {
+		t.Fatalf("prepare output: %v", err)
+	}
+	if _, err := os.Stat(controlPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected control file to be removed, err: %v", err)
+	}
 }
 
 func TestRunnerCompletesJob(t *testing.T) {
