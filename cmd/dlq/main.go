@@ -64,7 +64,7 @@ func usage() {
 	fmt.Println("  dlq add <url> [<url2> ...] --out /data/downloads [--name optional] [--site mega|webshare|http|https] [--archive-password batch-pass]")
 	fmt.Println("  dlq add --file urls.txt --out /data/downloads")
 	fmt.Println("  dlq add --stdin --out /data/downloads")
-	fmt.Println("  dlq status [--watch] [--interval 1] [--status queued|resolving|downloading|paused|decrypting|completed|failed|decrypt_failed|deleted]")
+	fmt.Println("  dlq status [--watch] [--interval 1] [--status queued|resolving|downloading|paused|decrypting|completed|failed|decrypt_failed|deleted]  (paused shows as stopped for webshare)")
 	fmt.Println("  dlq files")
 	fmt.Println("  dlq logs <job_id> [--tail 50]")
 	fmt.Println("  dlq info [--api http://127.0.0.1:8099]")

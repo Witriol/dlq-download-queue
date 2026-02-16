@@ -6,6 +6,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"github.com/Witriol/dlq-download-queue/internal/queue"
 )
 
 func printJobs(jobs []jobView) {
@@ -24,12 +26,16 @@ func printJobs(jobs []jobView) {
 		name := displayName(j)
 		speed := formatSpeed(j)
 		eta := formatETA(j)
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n", j.ID, j.Status, progress, speed, eta, j.OutDir, name)
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n", j.ID, displayStatus(j), progress, speed, eta, j.OutDir, name)
 		if j.ErrorCode != "" {
 			fmt.Fprintf(tw, " \t \t \t \t \t \t  error: %s (%s)\n", j.ErrorCode, j.Error)
 		}
 	}
 	_ = tw.Flush()
+}
+
+func displayStatus(j jobView) string {
+	return queue.DisplayStatus(j.Status, j.Site, j.URL)
 }
 
 func shortURL(u string) string {

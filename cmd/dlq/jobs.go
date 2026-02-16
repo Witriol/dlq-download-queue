@@ -41,7 +41,7 @@ func cmdStatus(args []string) {
 		}
 		active := counts["queued"] + counts["resolving"] + counts["downloading"] + counts["paused"] + counts["decrypting"]
 		done := counts["completed"] + counts["failed"] + counts["decrypt_failed"]
-		fmt.Printf("Jobs: %d total | active: %d (queued %d, resolving %d, downloading %d, paused %d, decrypting %d) | done: %d (completed %d, failed %d, decrypt_failed %d)\n",
+		fmt.Printf("Jobs: %d total | active: %d (queued %d, resolving %d, downloading %d, paused/stopped %d, decrypting %d) | done: %d (completed %d, failed %d, decrypt_failed %d)\n",
 			len(jobs), active, counts["queued"], counts["resolving"], counts["downloading"], counts["paused"], counts["decrypting"], done, counts["completed"], counts["failed"], counts["decrypt_failed"])
 		printJobs(jobs)
 		if !*watch || !hasActiveJobs(jobs) {
@@ -68,7 +68,7 @@ func cmdFiles(args []string) {
 	fmt.Fprintln(tw, "ID\tSTATUS\tPATH\tURL")
 	for _, j := range jobs {
 		path := filePath(j)
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\n", j.ID, j.Status, path, j.URL)
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\n", j.ID, displayStatus(j), path, j.URL)
 	}
 	_ = tw.Flush()
 }
