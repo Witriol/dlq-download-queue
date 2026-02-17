@@ -55,6 +55,7 @@ func main() {
 		Store:            store,
 		Resolvers:        resRegistry,
 		Downloader:       downloader.NewAria2Client(aria2RPC, aria2Secret),
+		MegaDecryptor:    queue.NewMegaDecryptor(),
 		ArchiveDecryptor: queue.NewArchiveDecryptor(),
 		GetConcurrency:   settings.GetConcurrency,
 		GetAutoDecrypt:   settings.GetAutoDecrypt,

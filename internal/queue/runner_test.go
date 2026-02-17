@@ -67,6 +67,32 @@ func (d *fakeArchiveDecryptor) snapshot() (called bool, archivePath, outDir, pas
 	return d.called, d.archivePath, d.outDir, d.password
 }
 
+type fakeMegaDecryptor struct {
+	mu       sync.Mutex
+	attempt  bool
+	err      error
+	called   bool
+	site     string
+	rawURL   string
+	filePath string
+}
+
+func (d *fakeMegaDecryptor) MaybeDecrypt(ctx context.Context, site, rawURL, filePath string) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.called = true
+	d.site = site
+	d.rawURL = rawURL
+	d.filePath = filePath
+	return d.attempt, d.err
+}
+
+func (d *fakeMegaDecryptor) snapshot() (called bool, site, rawURL, filePath string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.called, d.site, d.rawURL, d.filePath
+}
+
 type blockingArchiveDecryptor struct {
 	started chan struct{}
 	release chan struct{}
@@ -218,6 +244,10 @@ func TestRunnerCompletesJob(t *testing.T) {
 	if err := runner.updateActive(ctx); err != nil {
 		t.Fatalf("updateActive: %v", err)
 	}
+	waitFor(t, 2*time.Second, func() bool {
+		current, getErr := store.GetJob(ctx, id)
+		return getErr == nil && current.Status == StatusCompleted
+	})
 	job, err = store.GetJob(ctx, id)
 	if err != nil {
 		t.Fatalf("get job: %v", err)
@@ -289,6 +319,10 @@ func TestRunnerDecryptsArchiveOnComplete(t *testing.T) {
 	if password != "my-secret" {
 		t.Fatalf("password = %q", password)
 	}
+	waitFor(t, 2*time.Second, func() bool {
+		current, getErr := store.GetJob(ctx, id)
+		return getErr == nil && current.Status == StatusCompleted
+	})
 	job, err := store.GetJob(ctx, id)
 	if err != nil {
 		t.Fatalf("get job: %v", err)
@@ -453,6 +487,152 @@ func TestRunnerDecryptArchiveErrorMarksDecryptFailed(t *testing.T) {
 	}
 	if !eventsContain(events, "archive decrypt failed:") {
 		t.Fatalf("expected archive decrypt failed event, got: %v", events)
+	}
+}
+
+func TestRunnerMegaDecryptsOnComplete(t *testing.T) {
+	store := newRunnerStore(t)
+	ctx := context.Background()
+	url := "https://mega.nz/file/AbCdEf12#QwErTy123_-"
+	id, err := store.CreateJob(ctx, &Job{
+		URL:         url,
+		OutDir:      "/data",
+		Name:        "file.bin",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	fakeDL := &fakeDownloader{}
+	fakeMega := &fakeMegaDecryptor{attempt: true}
+	runner := &Runner{
+		Store:         store,
+		Resolvers:     resolver.NewRegistry(&fakeResolver{}),
+		Downloader:    fakeDL,
+		MegaDecryptor: fakeMega,
+		GetAutoDecrypt: func() bool {
+			return false
+		},
+		Concurrency: 1,
+	}
+
+	runner.tick(ctx)
+	fakeDL.status = &downloader.Status{
+		GID:           "gid-1",
+		Status:        "complete",
+		TotalLength:   "10",
+		CompletedLen:  "10",
+		DownloadSpeed: "0",
+		Files: []struct {
+			Path string `json:"path"`
+		}{
+			{Path: "/data/file.bin"},
+		},
+	}
+
+	if err := runner.updateActive(ctx); err != nil {
+		t.Fatalf("updateActive: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		called, _, _, _ := fakeMega.snapshot()
+		return called
+	})
+	called, site, rawURL, filePath := fakeMega.snapshot()
+	if !called {
+		t.Fatalf("expected mega decryptor to be called")
+	}
+	if site != "" {
+		t.Fatalf("site = %q", site)
+	}
+	if rawURL != url {
+		t.Fatalf("rawURL = %q", rawURL)
+	}
+	if filePath != "/data/file.bin" {
+		t.Fatalf("filePath = %q", filePath)
+	}
+	job, err := store.GetJob(ctx, id)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if job.Status != StatusCompleted {
+		t.Fatalf("expected completed, got %s", job.Status)
+	}
+	events, err := store.ListEvents(ctx, id, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if !eventsContain(events, "mega decrypt started: file.bin") {
+		t.Fatalf("expected mega decrypt started event, got: %v", events)
+	}
+	if !eventsContain(events, "mega decrypted: file.bin") {
+		t.Fatalf("expected mega decrypted event, got: %v", events)
+	}
+}
+
+func TestRunnerMegaDecryptErrorMarksDecryptFailed(t *testing.T) {
+	store := newRunnerStore(t)
+	ctx := context.Background()
+	id, err := store.CreateJob(ctx, &Job{
+		URL:         "https://mega.nz/file/AbCdEf12#QwErTy123_-",
+		OutDir:      "/data",
+		Name:        "file.bin",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	fakeDL := &fakeDownloader{}
+	fakeMega := &fakeMegaDecryptor{
+		attempt: true,
+		err:     errors.New("mac mismatch"),
+	}
+	runner := &Runner{
+		Store:         store,
+		Resolvers:     resolver.NewRegistry(&fakeResolver{}),
+		Downloader:    fakeDL,
+		MegaDecryptor: fakeMega,
+		Concurrency:   1,
+	}
+
+	runner.tick(ctx)
+	fakeDL.status = &downloader.Status{
+		GID:           "gid-1",
+		Status:        "complete",
+		TotalLength:   "10",
+		CompletedLen:  "10",
+		DownloadSpeed: "0",
+		Files: []struct {
+			Path string `json:"path"`
+		}{
+			{Path: "/data/file.bin"},
+		},
+	}
+
+	if err := runner.updateActive(ctx); err != nil {
+		t.Fatalf("updateActive: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		called, _, _, _ := fakeMega.snapshot()
+		return called
+	})
+	job, err := store.GetJob(ctx, id)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if job.Status != StatusDecryptFail {
+		t.Fatalf("expected decrypt_failed, got %s", job.Status)
+	}
+	if !job.ErrorCode.Valid || job.ErrorCode.String != "mega_decrypt_failed" {
+		t.Fatalf("expected mega_decrypt_failed error code, got %+v", job.ErrorCode)
+	}
+	events, err := store.ListEvents(ctx, id, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if !eventsContain(events, "mega decrypt failed:") {
+		t.Fatalf("expected mega decrypt failed event, got: %v", events)
 	}
 }
 

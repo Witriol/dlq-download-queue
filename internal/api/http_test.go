@@ -112,3 +112,14 @@ func TestHandlePauseMapsNotFoundTo404(t *testing.T) {
 		t.Fatalf("expected 404, got %d", rec.Code)
 	}
 }
+
+func TestRedactURLForLog(t *testing.T) {
+	got := redactURLForLog("https://mega.nz/file/AbCdEf12#super-secret-key")
+	if got != "https://mega.nz/file/AbCdEf12#***" {
+		t.Fatalf("redacted url = %q", got)
+	}
+	got = redactURLForLog("https://example.com/file.bin")
+	if got != "https://example.com/file.bin" {
+		t.Fatalf("url without fragment should be unchanged, got %q", got)
+	}
+}

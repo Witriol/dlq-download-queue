@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -50,7 +51,7 @@ func (s *Service) CreateJob(ctx context.Context, url, outDir, name, site, archiv
 	if err != nil {
 		return 0, err
 	}
-	msg := "added url=" + url + " out=" + cleanOut
+	msg := "added url=" + redactURLForLog(url) + " out=" + cleanOut
 	if cleanName != "" {
 		msg += " name=" + cleanName
 	}
@@ -63,6 +64,18 @@ func (s *Service) CreateJob(ctx context.Context, url, outDir, name, site, archiv
 	msg += " max_attempts=" + strconv.Itoa(maxAttempts)
 	_ = s.store.AddEvent(ctx, id, "info", msg)
 	return id, nil
+}
+
+func redactURLForLog(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return raw
+	}
+	if u.Fragment == "" {
+		return u.String()
+	}
+	u.Fragment = "***"
+	return u.String()
 }
 
 func (s *Service) ListJobs(ctx context.Context, status string, includeDeleted bool) ([]JobView, error) {

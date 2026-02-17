@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -116,11 +117,23 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Printf("action=add id=%d url=%q out=%q name=%q site=%q archive_password_set=%t max_attempts=%d",
-			id, req.URL, req.OutDir, req.Name, req.Site, strings.TrimSpace(req.ArchivePassword) != "", maxAttempts)
+			id, redactURLForLog(req.URL), req.OutDir, req.Name, req.Site, strings.TrimSpace(req.ArchivePassword) != "", maxAttempts)
 		writeJSON(w, http.StatusOK, map[string]any{"id": id})
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+func redactURLForLog(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return raw
+	}
+	if u.Fragment == "" {
+		return u.String()
+	}
+	u.Fragment = "***"
+	return u.String()
 }
 
 func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {

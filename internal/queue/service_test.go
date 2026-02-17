@@ -249,6 +249,33 @@ func TestServiceCreateJobStoresArchivePassword(t *testing.T) {
 	}
 }
 
+func TestServiceCreateJobRedactsURLFragmentInEvents(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	svc := NewService(store, &serviceTestDownloader{}, []string{"/data"})
+
+	id, err := svc.CreateJob(ctx, "https://mega.nz/file/AbCdEf12#super-secret-key", "/data", "file.bin", "mega", "", 2)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	lines, err := store.ListEvents(ctx, id, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	foundRedacted := false
+	for _, line := range lines {
+		if strings.Contains(line, "#super-secret-key") {
+			t.Fatalf("expected URL fragment to be redacted in events")
+		}
+		if strings.Contains(line, "https://mega.nz/file/AbCdEf12#***") {
+			foundRedacted = true
+		}
+	}
+	if !foundRedacted {
+		t.Fatalf("expected redacted mega URL in event logs, got %v", lines)
+	}
+}
+
 func TestServiceRemoveMapsActionNotAllowed(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

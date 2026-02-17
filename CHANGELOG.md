@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.3 - 2026-02-17
+
+- Added MEGA post-download payload decryption in the runner (`mega decrypt started/completed/failed` events).
+- Added integrity verification for MEGA payload decryption using MEGA content MAC checks.
+- Refactored post-download pipeline to run MEGA payload decryption before optional archive extraction.
+- Added dedicated `mega_decrypt_failed` job error code while preserving existing archive decrypt failure handling.
+- Added RAR signature pre-check so `.rar` files with non-RAR content are skipped as non-archives instead of failing decrypt.
+- Redacted URL fragments in add logs/events so MEGA keys are not written to logs.
+
 ## 0.2.2 - 2026-02-16
 
 - Reworked Webshare controls to `stop + retry` semantics; Webshare resume now requeues with a fresh link instead of unpausing old transfer state.

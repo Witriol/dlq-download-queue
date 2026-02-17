@@ -200,7 +200,7 @@ DLQ is designed for **trusted networks** (home LAN, Docker internal networking).
 ## Notes
 
 - Webshare resolver uses the public API in anonymous mode when possible and forces single-connection downloads for reliability.
-- MEGA resolver supports public file links (`mega.nz/file/...`) by resolving them to MEGA's temporary download URL.
+- MEGA resolver supports public file links (`mega.nz/file/...`) by resolving temporary download URLs and decrypting MEGA file payloads after download.
 - Auto decrypt/extract runs after successful download for archive extensions (`.zip`, `.rar`, `.7z`, `.tar*`, `.gz`, `.bz2`, `.xz`) when `auto_decrypt=true` in settings.
 - Pass `--archive-password` in `dlq add` (or `archive_password` in API/UI) for password-protected archives in that add batch.
 - DLQ tries `7zz` first; if needed (unsupported/open-as-archive RAR errors, or missing `7zz` binary) it automatically retries with `unar`.

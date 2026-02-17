@@ -37,3 +37,25 @@ func TestDisplayStatus(t *testing.T) {
 		t.Fatalf("expected unchanged status, got %q", got)
 	}
 }
+
+func TestIsMegaJob(t *testing.T) {
+	tests := []struct {
+		name   string
+		site   string
+		rawURL string
+		want   bool
+	}{
+		{name: "site flag", site: "mega", rawURL: "https://example.com/a", want: true},
+		{name: "url host fallback", site: "", rawURL: "https://mega.nz/file/abcde#key", want: true},
+		{name: "legacy host fallback", site: "", rawURL: "https://mega.co.nz/#!abcde!key", want: true},
+		{name: "mixed case host", site: "", rawURL: "https://MEGA.NZ/file/abcde#key", want: true},
+		{name: "non mega", site: "", rawURL: "https://webshare.cz/#/file/abcde/test", want: false},
+		{name: "empty", site: "", rawURL: "", want: false},
+	}
+	for _, tt := range tests {
+		got := IsMegaJob(tt.site, tt.rawURL)
+		if got != tt.want {
+			t.Fatalf("%s: IsMegaJob(%q, %q)=%v want %v", tt.name, tt.site, tt.rawURL, got, tt.want)
+		}
+	}
+}

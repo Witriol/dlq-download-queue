@@ -131,8 +131,9 @@ FROM jobs`
 	return out, rows.Err()
 }
 
-// ListPendingArchiveDecrypt returns jobs waiting for archive decrypt processing.
-func (s *Store) ListPendingArchiveDecrypt(ctx context.Context, limit int) ([]Job, error) {
+// ListPendingPostprocess returns jobs waiting for post-download processing
+// (MEGA content decrypt and/or archive decrypt).
+func (s *Store) ListPendingPostprocess(ctx context.Context, limit int) ([]Job, error) {
 	query := `
 SELECT id, url, site, out_dir, name, archive_password, resolved_url, filename, size_bytes, bytes_done, download_speed, eta_seconds, status, error, error_code,
        engine, engine_gid, attempts, max_attempts, next_retry_at, created_at, updated_at, started_at, completed_at, deleted_at
@@ -166,6 +167,11 @@ ORDER BY id ASC`
 		out = append(out, j)
 	}
 	return out, rows.Err()
+}
+
+// ListPendingArchiveDecrypt is kept as a compatibility alias.
+func (s *Store) ListPendingArchiveDecrypt(ctx context.Context, limit int) ([]Job, error) {
+	return s.ListPendingPostprocess(ctx, limit)
 }
 
 func (s *Store) AddEvent(ctx context.Context, jobID int64, level, msg string) error {
@@ -361,7 +367,14 @@ WHERE id = ?
 }
 
 func (s *Store) MarkDecryptFailed(ctx context.Context, id int64, msg string) error {
+	return s.MarkPostprocessFailed(ctx, id, msg, "archive_decrypt_failed")
+}
+
+func (s *Store) MarkPostprocessFailed(ctx context.Context, id int64, msg, code string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
+	if strings.TrimSpace(code) == "" {
+		code = "archive_decrypt_failed"
+	}
 	_, err := s.db.ExecContext(ctx, `
 UPDATE jobs
 SET status = ?,
@@ -372,7 +385,7 @@ SET status = ?,
     updated_at = ?,
     completed_at = COALESCE(completed_at, ?)
 WHERE id = ?
-`, StatusDecryptFail, msg, "archive_decrypt_failed", now, now, id)
+`, StatusDecryptFail, msg, code, now, now, id)
 	return err
 }
 
