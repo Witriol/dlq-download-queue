@@ -63,13 +63,13 @@
     <div class="browser-body">
       <div class="browser-main">
         {#if browserPath}
-          <div class="toolbar">
+          <div class="toolbar browser-path-toolbar">
             <span class="badge">Path:</span>
             {#if browserParent && !browserIsRoot}
               <button class="btn ghost" on:click={() => onLoadBrowser(browserParent)}>↑ Up</button>
             {/if}
-            <button class="btn ghost" on:click={() => onLoadBrowser('')}>🏠 Root</button>
-            <span>{browserPath}</span>
+            <button class="btn ghost" on:click={() => onLoadBrowser('')}>Root</button>
+            <span class="browser-current-path">{browserPath}</span>
           </div>
         {/if}
 
@@ -96,9 +96,9 @@
             <div class="result-item">No matching folders in this directory</div>
           {:else}
             {#each filteredBrowserDirs as dir}
-              <div class="result-item" style="cursor: pointer;">
-                <button class="btn ghost" on:click={() => onLoadBrowser(nextPath(dir))}>
-                  📁 {dir}
+              <div class="result-item browser-dir-item">
+                <button class="btn ghost browser-dir-btn" on:click={() => onLoadBrowser(nextPath(dir))}>
+                  {dir}
                 </button>
               </div>
             {/each}
@@ -115,7 +115,7 @@
           <div>
             <label for="browser-new-folder">Create New Folder</label>
             <div class="actions">
-              <input id="browser-new-folder" type="text" placeholder="Folder name" bind:value={browserNewFolderName} style="flex: 1;" />
+              <input class="grow-input" id="browser-new-folder" type="text" placeholder="Folder name" bind:value={browserNewFolderName} />
               <button class="btn ghost" on:click={onCreateFolder} disabled={!browserNewFolderName.trim()}>
                 + Create
               </button>

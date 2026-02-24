@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { addJobsBatch, browse, clearJobs, getEvents, getMeta, getSettings, listJobs, mkdir, postAction, updateSettings } from '$lib/api';
-  import { humanBytes } from '$lib/format';
+  import { humanBytes, humanDuration } from '$lib/format';
   import { countsFor, detectSite, parseUrls, sortJobs } from '$lib/job-utils';
   import JobsTable from '$lib/components/JobsTable.svelte';
   import AddJobsModal from '$lib/components/AddJobsModal.svelte';
@@ -70,6 +70,30 @@
     return sum + (job.download_speed ?? 0);
   }, 0);
   $: totalSpeedLabel = totalSpeed > 0 ? `${humanBytes(totalSpeed)}/s` : '-';
+  $: inProgressJobs = jobs.filter((job) => (
+    job.status === 'queued' ||
+    job.status === 'resolving' ||
+    job.status === 'downloading' ||
+    job.status === 'paused' ||
+    job.status === 'decrypting'
+  ));
+  $: inProgressBytesRemaining = inProgressJobs.reduce((sum, job) => {
+    const total = job.size_bytes ?? 0;
+    if (total <= 0) return sum;
+    const done = Math.max(0, Math.min(total, job.bytes_done ?? 0));
+    return sum + Math.max(0, total - done);
+  }, 0);
+  $: inProgressKnownSizeCount = inProgressJobs.reduce((sum, job) => {
+    const total = job.size_bytes ?? 0;
+    return total > 0 ? sum + 1 : sum;
+  }, 0);
+  $: overallEtaSeconds = totalSpeed > 0 && inProgressBytesRemaining > 0
+    ? Math.ceil(inProgressBytesRemaining / totalSpeed)
+    : 0;
+  $: overallEtaLabel = overallEtaSeconds > 0 ? humanDuration(overallEtaSeconds) : '-';
+  $: overallEtaHint = inProgressJobs.length > 0 && inProgressKnownSizeCount < inProgressJobs.length
+    ? `${inProgressKnownSizeCount}/${inProgressJobs.length} sized`
+    : '';
 
   async function refresh() {
     lastError = '';
@@ -107,6 +131,16 @@
   function sortIndicator(key) {
     if (sortKey !== key) return '';
     return sortDir === 'asc' ? ' ↑' : ' ↓';
+  }
+
+  function setSort(key) {
+    if (sortKey === key) return;
+    sortKey = key;
+    sortDir = 'asc';
+  }
+
+  function toggleSortDirection() {
+    sortDir = sortDir === 'asc' ? 'desc' : 'asc';
   }
 
   async function handleAdd() {
@@ -365,6 +399,13 @@
       <span>Total Speed</span>
       <strong>{totalSpeedLabel}</strong>
     </div>
+    <div class="stat stat-eta">
+      <span>Overall ETA</span>
+      <strong>{overallEtaLabel}</strong>
+      {#if overallEtaHint}
+        <small>{overallEtaHint}</small>
+      {/if}
+    </div>
   </div>
 
   {#if lastError}
@@ -375,6 +416,8 @@
     {jobs}
     {sortedJobs}
     {statusOptions}
+    {sortKey}
+    {sortDir}
     bind:statusFilter
     bind:includeDeleted
     bind:autoRefresh
@@ -382,6 +425,8 @@
     {sortIndicator}
     onRefresh={refresh}
     onToggleSort={toggleSort}
+    onSetSort={setSort}
+    onToggleSortDirection={toggleSortDirection}
     onRequestClear={() => (showClearConfirm = true)}
     onOpenLogs={openLogs}
     onJobAction={handleAction}

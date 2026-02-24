@@ -50,7 +50,7 @@
       <div class="form-field">
         <label for="add-out-dir">Out Directory</label>
         <div class="actions">
-          <input id="add-out-dir" type="text" placeholder={outDirPlaceholder} bind:value={addOutDir} style="flex: 1;" />
+          <input class="grow-input" id="add-out-dir" type="text" placeholder={outDirPlaceholder} bind:value={addOutDir} />
           <button class="btn ghost" type="button" on:click={onOpenBrowser}>Browse</button>
         </div>
       </div>
@@ -86,7 +86,7 @@
       <div class="actions add-jobs-actions">
         <label class="btn ghost">
           Import file(s)
-          <input type="file" multiple accept=".txt" style="display: none" on:change={onHandleFiles} />
+          <input class="hidden-file-input" type="file" multiple accept=".txt" on:change={onHandleFiles} />
         </label>
         <button class="btn ghost" type="button" on:click={onClearUrls}>Clear</button>
         <button class="btn primary" type="button" on:click={onSubmit} disabled={adding}>

@@ -69,6 +69,9 @@ export function formatProgress(job: JobView): string {
     return humanBytes(done);
   }
   const pct = Math.min(100, (done / total) * 100);
+  if (pct >= 100) {
+    return humanBytes(total);
+  }
   return `${humanBytes(done)} / ${humanBytes(total)} (${pct.toFixed(1)}%)`;
 }
 

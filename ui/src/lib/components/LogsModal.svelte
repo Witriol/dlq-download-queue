@@ -44,17 +44,17 @@
         </svg>
       </button>
     </div>
-    <div class="toolbar" style="margin-bottom: 12px;">
+    <div class="toolbar logs-toolbar" style="margin-bottom: 12px;">
       <label class="small">
         Tail
-        <input type="number" min="1" max="500" style="width: 90px" bind:value={logsLimit} />
+        <input class="num-input num-input-medium" type="number" min="1" max="500" bind:value={logsLimit} />
       </label>
       <label class="small">
         <input type="checkbox" bind:checked={logsAutoRefresh} /> auto refresh
       </label>
       <label class="small">
         every
-        <input type="number" min="1" max="60" style="width: 64px" bind:value={logsInterval} />
+        <input class="num-input num-input-small" type="number" min="1" max="60" bind:value={logsInterval} />
         s
       </label>
       <button class="btn ghost" on:click={onRefresh} disabled={logsLoading}>Refresh</button>

@@ -9,36 +9,83 @@
   export let includeDeleted = false;
   export let autoRefresh = true;
   export let refreshInterval = 3;
+  export let sortKey = 'id';
+  export let sortDir = 'desc';
 
   export let sortIndicator = () => '';
   export let onRefresh = () => {};
   export let onToggleSort = () => {};
+  export let onSetSort = () => {};
+  export let onToggleSortDirection = () => {};
   export let onRequestClear = () => {};
   export let onOpenLogs = () => {};
   export let onJobAction = () => {};
+
+  let showFilters = false;
+
+  const sortOptions = [
+    { value: 'id', label: 'ID' },
+    { value: 'status', label: 'Status' },
+    { value: 'name', label: 'Name' },
+    { value: 'progress', label: 'Progress' },
+    { value: 'speed', label: 'Speed' },
+    { value: 'eta', label: 'ETA' },
+    { value: 'path', label: 'Path' },
+    { value: 'url', label: 'URL' }
+  ];
 </script>
 
 <section class="panel">
   <div class="toolbar table-toolbar" style="margin-bottom: 12px;">
-    <div class="toolbar-group">
+    <div class="toolbar-primary">
       <select bind:value={statusFilter} on:change={onRefresh}>
         {#each statusOptions as status}
           <option value={status}>{displayStatusFilter(status)}</option>
         {/each}
       </select>
-      <label class="small">
-        <input type="checkbox" bind:checked={includeDeleted} on:change={onRefresh} /> include deleted
-      </label>
-      <label class="small">
-        <input type="checkbox" bind:checked={autoRefresh} /> auto refresh
-      </label>
-      <label class="small">
-        every
-        <input type="number" min="1" max="60" style="width: 64px" bind:value={refreshInterval} />
-        s
-      </label>
+      <button
+        class="btn tiny ghost filter-toggle-btn"
+        type="button"
+        aria-expanded={showFilters}
+        on:click={() => (showFilters = !showFilters)}
+      >
+        {showFilters ? 'Less' : 'More'}
+        <span class="filter-chevron" aria-hidden="true">{showFilters ? '▴' : '▾'}</span>
+      </button>
     </div>
-    <button class="btn danger tiny" on:click={onRequestClear}>Clear completed</button>
+    {#if showFilters}
+      <div class="filter-panel">
+        <div class="toolbar-group">
+          <label class="small">
+            <input type="checkbox" bind:checked={includeDeleted} on:change={onRefresh} /> include deleted
+          </label>
+          <label class="small">
+            <input type="checkbox" bind:checked={autoRefresh} /> auto refresh
+          </label>
+          <label class="small">
+            every
+            <input class="num-input num-input-small" type="number" min="1" max="60" bind:value={refreshInterval} />
+            s
+          </label>
+        </div>
+        <div class="toolbar-group toolbar-sort">
+          <label class="small" for="jobs-sort-key">sort</label>
+          <select
+            id="jobs-sort-key"
+            value={sortKey}
+            on:change={(event) => onSetSort(event.currentTarget.value)}
+          >
+            {#each sortOptions as option}
+              <option value={option.value}>{option.label}</option>
+            {/each}
+          </select>
+          <button class="btn tiny ghost sort-direction-btn" type="button" on:click={onToggleSortDirection}>
+            {sortDir === 'asc' ? 'Ascending' : 'Descending'}
+          </button>
+        </div>
+        <button class="btn danger tiny" on:click={onRequestClear}>Clear completed</button>
+      </div>
+    {/if}
   </div>
 
   {#if jobs.length === 0}
@@ -72,21 +119,36 @@
         </thead>
         <tbody>
           {#each sortedJobs as job}
-            <tr>
-              <td>{job.id}</td>
-              <td><span class="status" data-status={job.status}>{displayStatus(job)}</span></td>
-              <td class="cell-name">{fileName(job)}</td>
-              <td>{formatProgress(job)}</td>
-              <td>{formatSpeed(job)}</td>
-              <td>{formatETA(job)}</td>
-              <td class="cell-path">{folderPath(job)}</td>
-              <td class="cell-url">
+            {@const progress = formatProgress(job)}
+            {@const speed = formatSpeed(job)}
+            {@const eta = formatETA(job)}
+            <tr data-status={job.status}>
+              <td class="cell-id" data-label="ID">{job.id}</td>
+              <td class="cell-status" data-label="Status"><span class="status" data-status={job.status}>{displayStatus(job)}</span></td>
+              <td class="cell-name" data-label="Name">{fileName(job)}</td>
+              <td class="cell-progress" data-label="Progress">
+                <span class="metric-badge metric-progress">{progress}</span>
+                {#if (job.size_bytes ?? 0) > 0}
+                  {@const pct = Math.min(100, ((job.bytes_done ?? 0) / job.size_bytes) * 100)}
+                  <div class="progress-track">
+                    <div class="progress-fill" style="width: {pct.toFixed(1)}%"></div>
+                  </div>
+                {/if}
+              </td>
+              <td class="cell-speed" data-label="Speed">
+                <span class="metric-badge metric-speed" class:metric-empty={speed === '-'}>{speed}</span>
+              </td>
+              <td class="cell-eta" data-label="ETA">
+                <span class="metric-badge metric-eta" class:metric-empty={eta === '-'}>{eta}</span>
+              </td>
+              <td class="cell-path" data-label="Path">{folderPath(job)}</td>
+              <td class="cell-url" data-label="URL">
                 <div>{job.url}</div>
                 {#if job.error_code}
                   <div class="badge">error: {job.error_code} {job.error}</div>
                 {/if}
               </td>
-              <td class="actions-col">
+              <td class="actions-col" data-label="Actions">
                 <div class="actions row-actions">
                   {#if job.status === 'queued' || job.status === 'resolving' || job.status === 'downloading'}
                     {#if isWebshareJob(job)}
