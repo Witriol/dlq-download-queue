@@ -353,6 +353,10 @@
     if (showLogs) startLogsTimer();
   }
 
+  $: if (typeof document !== 'undefined') {
+    document.body.style.overflow = (showAdd || showBrowser || showLogs || showSettings || showClearConfirm) ? 'hidden' : '';
+  }
+
   onMount(() => {
     refresh();
     loadMeta();
