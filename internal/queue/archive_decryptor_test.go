@@ -2,6 +2,8 @@ package queue
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -69,6 +71,76 @@ func TestIsArchiveFile(t *testing.T) {
 	for _, tc := range cases {
 		if got := isArchiveFile(tc.in); got != tc.want {
 			t.Fatalf("isArchiveFile(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestMultipartArchiveFirstVolume(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"/data/a.part2.rar", "/data/a.part1.rar"},
+		{"/data/a.part02.rar", "/data/a.part01.rar"},
+		{"/data/a.part1.rar", "/data/a.part1.rar"},
+		{"/data/a.r00", "/data/a.rar"},
+		{"/data/a.r01", "/data/a.rar"},
+		{"/data/a.rar", "/data/a.rar"},
+	}
+	for _, tc := range cases {
+		if got := multipartArchiveFirstVolume(tc.in); got != tc.want {
+			t.Fatalf("multipartArchiveFirstVolume(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestResolveArchiveEntryPathUsesFirstPartWhenPresent(t *testing.T) {
+	dir := t.TempDir()
+	part1 := filepath.Join(dir, "sample.part1.rar")
+	part2 := filepath.Join(dir, "sample.part2.rar")
+
+	if err := os.WriteFile(part1, []byte("part1"), 0o644); err != nil {
+		t.Fatalf("write part1: %v", err)
+	}
+	if err := os.WriteFile(part2, []byte("part2"), 0o644); err != nil {
+		t.Fatalf("write part2: %v", err)
+	}
+
+	got := resolveArchiveEntryPath(part2)
+	if got != part1 {
+		t.Fatalf("resolveArchiveEntryPath(%q) = %q, want %q", part2, got, part1)
+	}
+}
+
+func TestResolveArchiveEntryPathKeepsOriginalWhenFirstPartMissing(t *testing.T) {
+	dir := t.TempDir()
+	part2 := filepath.Join(dir, "sample.part2.rar")
+	if err := os.WriteFile(part2, []byte("part2"), 0o644); err != nil {
+		t.Fatalf("write part2: %v", err)
+	}
+
+	got := resolveArchiveEntryPath(part2)
+	if got != part2 {
+		t.Fatalf("resolveArchiveEntryPath(%q) = %q, want %q", part2, got, part2)
+	}
+}
+
+func TestMultipartArchiveGroupKey(t *testing.T) {
+	cases := []struct {
+		in           string
+		wantKey      string
+		wantExplicit bool
+	}{
+		{"/data/Show.part2.rar", "/data|partrar|show", true},
+		{"/data/Show.part1.rar", "/data|partrar|show", true},
+		{"/data/Show.rar", "/data|rstyle|show", false},
+		{"/data/Show.r00", "/data|rstyle|show", true},
+		{"/data/Show.bin", "", false},
+	}
+	for _, tc := range cases {
+		gotKey, gotExplicit := multipartArchiveGroupKey(tc.in)
+		if gotKey != tc.wantKey || gotExplicit != tc.wantExplicit {
+			t.Fatalf("multipartArchiveGroupKey(%q) = (%q, %v), want (%q, %v)", tc.in, gotKey, gotExplicit, tc.wantKey, tc.wantExplicit)
 		}
 	}
 }

@@ -35,7 +35,8 @@ type Runner struct {
 
 type decryptTask struct {
 	jobID       int64
-	filePath    string
+	megaPath    string
+	archivePath string
 	outDir      string
 	password    string
 	rawURL      string
@@ -285,7 +286,9 @@ func (r *Runner) updateActive(ctx context.Context) error {
 			if msg == "" {
 				msg = "download error"
 			}
-			_ = r.Store.MarkFailed(ctx, job.ID, "download_error", msg, time.Now().UTC().Add(10*time.Minute))
+			code, retryAt := mapDownloadError(msg)
+			_ = r.Store.AddEvent(ctx, job.ID, "error", msg)
+			_ = r.Store.MarkFailed(ctx, job.ID, code, msg, retryAt)
 		default:
 			_ = r.Store.UpdateProgress(ctx, job.ID, bytesDone, StatusDownloading, speed, eta)
 		}
@@ -294,7 +297,7 @@ func (r *Runner) updateActive(ctx context.Context) error {
 }
 
 func (r *Runner) queueDecryptFromStatus(ctx context.Context, job Job, st *downloadclient.Status, bytesDone int64) bool {
-	task, shouldProcess, failMsg := r.buildDecryptTask(job, st)
+	task, shouldProcess, waitMsg, failMsg := r.buildDecryptTask(ctx, job, st)
 	if !shouldProcess {
 		return false
 	}
@@ -309,6 +312,10 @@ func (r *Runner) queueDecryptFromStatus(ctx context.Context, job Job, st *downlo
 		return false
 	}
 	_ = r.Store.AddEvent(ctx, job.ID, "info", "download finished")
+	if waitMsg != "" {
+		_ = r.Store.AddEvent(ctx, job.ID, "info", waitMsg)
+		return true
+	}
 	r.scheduleDecrypt(ctx, task)
 	return true
 }
@@ -322,10 +329,10 @@ func (r *Runner) dispatchCompletedDecrypt(ctx context.Context) error {
 		return err
 	}
 	for _, job := range jobs {
-		if !r.autoDecryptEnabled() && job.Status != StatusDecrypting && !r.shouldDecryptMega(job) {
+		if !r.autoDecryptEnabled() && job.Status != StatusDecrypting && !r.shouldDecryptMega(job, archivePathForJob(job)) {
 			continue
 		}
-		task, shouldProcess, failMsg := r.buildDecryptTask(job, nil)
+		task, shouldProcess, waitMsg, failMsg := r.buildDecryptTask(ctx, job, nil)
 		if !shouldProcess {
 			if job.Status == StatusDecrypting {
 				if markErr := r.Store.MarkCompleted(ctx, job.ID); markErr != nil {
@@ -341,11 +348,19 @@ func (r *Runner) dispatchCompletedDecrypt(ctx context.Context) error {
 			_ = r.Store.ClearArchivePassword(ctx, job.ID)
 			continue
 		}
+		markedDecrypting := false
 		if job.Status != StatusDecrypting {
 			if err := r.Store.MarkDecrypting(ctx, job.ID, job.BytesDone); err != nil {
 				log.Printf("runner mark decrypting error for job %d: %v", job.ID, err)
 				continue
 			}
+			markedDecrypting = true
+		}
+		if waitMsg != "" {
+			if markedDecrypting {
+				_ = r.Store.AddEvent(ctx, job.ID, "info", waitMsg)
+			}
+			continue
 		}
 		r.scheduleDecrypt(ctx, task)
 	}
@@ -368,8 +383,8 @@ func (r *Runner) runDecrypt(ctx context.Context, task decryptTask) {
 	defer r.unmarkDecryptPending(task.jobID)
 
 	if task.decryptMega && r.MegaDecryptor != nil {
-		_ = r.Store.AddEvent(ctx, task.jobID, "info", "mega decrypt started: "+filepath.Base(task.filePath))
-		attempted, err := r.MegaDecryptor.MaybeDecrypt(ctx, task.site, task.rawURL, task.filePath)
+		_ = r.Store.AddEvent(ctx, task.jobID, "info", "mega decrypt started: "+filepath.Base(task.megaPath))
+		attempted, err := r.MegaDecryptor.MaybeDecrypt(ctx, task.site, task.rawURL, task.megaPath)
 		if err != nil {
 			eventMsg := "mega decrypt failed: " + err.Error()
 			_ = r.Store.AddEvent(ctx, task.jobID, "error", eventMsg)
@@ -380,12 +395,12 @@ func (r *Runner) runDecrypt(ctx context.Context, task decryptTask) {
 			return
 		}
 		if attempted {
-			_ = r.Store.AddEvent(ctx, task.jobID, "info", "mega decrypted: "+filepath.Base(task.filePath))
+			_ = r.Store.AddEvent(ctx, task.jobID, "info", "mega decrypted: "+filepath.Base(task.megaPath))
 		}
 	}
 	if task.decryptArch && r.ArchiveDecryptor != nil {
-		_ = r.Store.AddEvent(ctx, task.jobID, "info", "archive decrypt started: "+filepath.Base(task.filePath))
-		attempted, err := r.ArchiveDecryptor.MaybeDecrypt(ctx, task.filePath, task.outDir, task.password)
+		_ = r.Store.AddEvent(ctx, task.jobID, "info", "archive decrypt started: "+filepath.Base(task.archivePath))
+		attempted, err := r.ArchiveDecryptor.MaybeDecrypt(ctx, task.archivePath, task.outDir, task.password)
 		if err != nil {
 			eventMsg := "archive decrypt failed: " + err.Error()
 			_ = r.Store.AddEvent(ctx, task.jobID, "error", eventMsg)
@@ -396,7 +411,7 @@ func (r *Runner) runDecrypt(ctx context.Context, task decryptTask) {
 			return
 		}
 		if attempted {
-			_ = r.Store.AddEvent(ctx, task.jobID, "info", "archive decrypted: "+filepath.Base(task.filePath))
+			_ = r.Store.AddEvent(ctx, task.jobID, "info", "archive decrypted: "+filepath.Base(task.archivePath))
 		} else {
 			_ = r.Store.AddEvent(ctx, task.jobID, "info", "archive decrypt skipped: not an archive")
 		}
@@ -409,36 +424,110 @@ func (r *Runner) runDecrypt(ctx context.Context, task decryptTask) {
 	}
 }
 
-func (r *Runner) buildDecryptTask(job Job, st *downloadclient.Status) (decryptTask, bool, string) {
+func (r *Runner) buildDecryptTask(ctx context.Context, job Job, st *downloadclient.Status) (decryptTask, bool, string, string) {
 	password := strings.TrimSpace(nullString(job.ArchivePassword))
-	filePath := firstStatusPath(st)
-	if filePath == "" {
-		filePath = archivePathForJob(job)
+	downloadPath := firstStatusPath(st)
+	if downloadPath == "" {
+		downloadPath = archivePathForJob(job)
 	}
+	archivePath := resolveArchiveEntryPath(downloadPath)
 	task := decryptTask{
 		jobID:       job.ID,
-		filePath:    filePath,
+		megaPath:    downloadPath,
+		archivePath: archivePath,
 		outDir:      job.OutDir,
 		password:    password,
 		rawURL:      job.URL,
 		site:        job.Site,
-		decryptMega: r.shouldDecryptMega(job),
-		decryptArch: r.shouldDecryptArchive(job, filePath, password),
+		decryptMega: r.shouldDecryptMega(job, downloadPath),
+		decryptArch: r.shouldDecryptArchive(job, archivePath, password),
 	}
 	if !task.decryptMega && !task.decryptArch {
-		return task, false, ""
+		return task, false, "", ""
 	}
-	if strings.TrimSpace(task.filePath) == "" {
-		return task, true, "postprocess failed: missing file path"
+	if task.decryptMega && strings.TrimSpace(task.megaPath) == "" {
+		return task, true, "", "postprocess failed: missing file path for mega decrypt"
 	}
-	return task, true, ""
+	if task.decryptArch && strings.TrimSpace(task.archivePath) == "" {
+		return task, true, "", "postprocess failed: missing file path for archive decrypt"
+	}
+	if task.decryptArch {
+		if waitMsg := r.archiveDecryptWaitMessage(ctx, job, task.archivePath); waitMsg != "" {
+			return task, true, waitMsg, ""
+		}
+	}
+	return task, true, "", ""
 }
 
-func (r *Runner) shouldDecryptMega(job Job) bool {
+func (r *Runner) archiveDecryptWaitMessage(ctx context.Context, job Job, filePath string) string {
+	if r == nil || r.Store == nil {
+		return ""
+	}
+	groupKey, groupExplicit := multipartArchiveGroupKey(filePath)
+	if groupKey == "" {
+		return ""
+	}
+	jobs, err := r.Store.ListJobs(ctx, "", false)
+	if err != nil {
+		log.Printf("runner multipart wait scan error for job %d: %v", job.ID, err)
+		return ""
+	}
+	pendingParts := 0
+	seenSibling := false
+	for _, other := range jobs {
+		if other.ID == job.ID {
+			continue
+		}
+		if other.OutDir != job.OutDir {
+			continue
+		}
+		otherPath := archivePathForJob(other)
+		otherGroupKey, otherExplicit := multipartArchiveGroupKey(otherPath)
+		if otherGroupKey == "" || otherGroupKey != groupKey {
+			continue
+		}
+		seenSibling = true
+		if otherExplicit {
+			groupExplicit = true
+		}
+		if isMultipartSiblingPending(other.Status) {
+			pendingParts++
+		}
+	}
+	if !groupExplicit && !seenSibling {
+		return ""
+	}
+	if pendingParts > 0 {
+		return "archive decrypt waiting: multipart set still downloading (" + strconv.Itoa(pendingParts) + " part job(s))"
+	}
+	return ""
+}
+
+func isMultipartSiblingPending(status string) bool {
+	switch status {
+	case StatusQueued, StatusResolving, StatusDownloading, StatusPaused:
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *Runner) shouldDecryptMega(job Job, filePath string) bool {
 	if r.MegaDecryptor == nil {
 		return false
 	}
-	return IsMegaJob(job.Site, job.URL)
+	if !IsMegaJob(job.Site, job.URL) {
+		return false
+	}
+	// Retrying archive-only postprocess failures should not re-run MEGA payload decrypt.
+	// The file was already decrypted earlier and re-running can trigger MAC mismatch.
+	if job.Status == StatusDecrypting && isArchiveFile(filePath) {
+		code := strings.TrimSpace(nullString(job.ErrorCode))
+		if code != "" {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Runner) shouldDecryptArchive(job Job, filePath, password string) bool {
@@ -571,5 +660,18 @@ func mapResolverError(err error) (code, msg string, retryAt time.Time) {
 		return "unknown_site", "unknown site; cannot resolve", time.Now().UTC().Add(6 * time.Hour)
 	default:
 		return "resolve_failed", err.Error(), time.Now().UTC().Add(30 * time.Minute)
+	}
+}
+
+func mapDownloadError(msg string) (code string, retryAt time.Time) {
+	now := time.Now().UTC()
+	lower := strings.ToLower(strings.TrimSpace(msg))
+	switch {
+	case strings.Contains(lower, "status=509"),
+		strings.Contains(lower, "status code 509"),
+		strings.Contains(lower, "status 509"):
+		return "quota_exceeded", now.Add(2 * time.Hour)
+	default:
+		return "download_error", now.Add(10 * time.Minute)
 	}
 }

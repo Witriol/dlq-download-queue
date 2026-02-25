@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -28,7 +30,8 @@ func (d *commandArchiveDecryptor) MaybeDecrypt(ctx context.Context, archivePath,
 	if d == nil {
 		return false, nil
 	}
-	if !isArchiveFile(archivePath) {
+	resolvedArchivePath := resolveArchiveEntryPath(archivePath)
+	if !isArchiveFile(resolvedArchivePath) {
 		return false, nil
 	}
 	command := strings.TrimSpace(d.command)
@@ -36,13 +39,13 @@ func (d *commandArchiveDecryptor) MaybeDecrypt(ctx context.Context, archivePath,
 		command = "7zz"
 	}
 	password := strings.TrimSpace(overridePassword)
-	out, err := runArchiveTool(ctx, command, archivePath, outDir, password)
+	out, err := runArchiveTool(ctx, command, resolvedArchivePath, outDir, password)
 	if err == nil {
 		return true, nil
 	}
-	if shouldTryUnarFallback(command, archivePath, out, err) {
+	if shouldTryUnarFallback(command, resolvedArchivePath, out, err) {
 		if _, lookErr := exec.LookPath("unar"); lookErr == nil {
-			fallbackOut, fallbackErr := runArchiveTool(ctx, "unar", archivePath, outDir, password)
+			fallbackOut, fallbackErr := runArchiveTool(ctx, "unar", resolvedArchivePath, outDir, password)
 			if fallbackErr == nil {
 				return true, nil
 			}
@@ -157,4 +160,104 @@ func isCommandNotFound(err error) bool {
 		return errors.Is(execErr.Err, exec.ErrNotFound)
 	}
 	return false
+}
+
+func resolveArchiveEntryPath(archivePath string) string {
+	clean := strings.TrimSpace(archivePath)
+	if clean == "" {
+		return clean
+	}
+	candidate := multipartArchiveFirstVolume(clean)
+	if candidate == clean {
+		return clean
+	}
+	if _, err := os.Stat(candidate); err == nil {
+		return candidate
+	}
+	return clean
+}
+
+func multipartArchiveFirstVolume(path string) string {
+	clean := strings.TrimSpace(path)
+	if clean == "" {
+		return clean
+	}
+	dir := filepath.Dir(clean)
+	base := filepath.Base(clean)
+	lower := strings.ToLower(base)
+
+	if strings.HasSuffix(lower, ".rar") {
+		stem := strings.TrimSuffix(base, base[len(base)-4:])
+		stemLower := strings.ToLower(stem)
+		idx := strings.LastIndex(stemLower, ".part")
+		if idx >= 0 {
+			numPart := stem[idx+len(".part"):]
+			if numPart != "" && isAllDigits(numPart) {
+				if num, err := strconv.Atoi(numPart); err == nil && num > 1 {
+					firstNum := "1"
+					if len(numPart) > 1 {
+						firstNum = fmt.Sprintf("%0*d", len(numPart), 1)
+					}
+					first := stem[:idx] + ".part" + firstNum + ".rar"
+					return filepath.Join(dir, first)
+				}
+			}
+		}
+		return clean
+	}
+
+	if len(base) > 4 && lower[len(lower)-4] == '.' && lower[len(lower)-3] == 'r' {
+		extDigits := lower[len(lower)-2:]
+		if isAllDigits(extDigits) {
+			if num, err := strconv.Atoi(extDigits); err == nil && num >= 0 {
+				return filepath.Join(dir, base[:len(base)-4]+".rar")
+			}
+		}
+	}
+
+	return clean
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func multipartArchiveGroupKey(path string) (string, bool) {
+	clean := strings.TrimSpace(path)
+	if clean == "" {
+		return "", false
+	}
+	dir := strings.ToLower(filepath.Clean(filepath.Dir(clean)))
+	base := filepath.Base(clean)
+	lower := strings.ToLower(base)
+
+	if strings.HasSuffix(lower, ".rar") {
+		stem := strings.TrimSuffix(base, base[len(base)-4:])
+		stemLower := strings.ToLower(stem)
+		if idx := strings.LastIndex(stemLower, ".part"); idx >= 0 {
+			numPart := stem[idx+len(".part"):]
+			if numPart != "" && isAllDigits(numPart) {
+				prefix := strings.ToLower(stem[:idx])
+				return dir + "|partrar|" + prefix, true
+			}
+		}
+		return dir + "|rstyle|" + strings.ToLower(stem), false
+	}
+
+	if len(base) > 4 && lower[len(lower)-4] == '.' && lower[len(lower)-3] == 'r' {
+		extDigits := lower[len(lower)-2:]
+		if isAllDigits(extDigits) {
+			return dir + "|rstyle|" + strings.ToLower(base[:len(base)-4]), true
+		}
+	}
+
+	return "", false
 }

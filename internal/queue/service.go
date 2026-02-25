@@ -109,7 +109,7 @@ func (s *Service) Retry(ctx context.Context, id int64) error {
 		return err
 	}
 	if job.Status == StatusDecryptFail {
-		if err := s.store.MarkDecrypting(ctx, id, job.BytesDone); err != nil {
+		if err := s.store.MarkDecryptingRetry(ctx, id, job.BytesDone); err != nil {
 			return err
 		}
 		return s.store.AddEvent(ctx, id, "info", "retry decrypt queued")

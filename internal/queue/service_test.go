@@ -361,6 +361,9 @@ func TestServiceRetryDecryptFailedQueuesDecryptOnly(t *testing.T) {
 	if job.Status != StatusDecrypting {
 		t.Fatalf("expected decrypting status, got %s", job.Status)
 	}
+	if !job.ErrorCode.Valid || job.ErrorCode.String != "archive_decrypt_failed" {
+		t.Fatalf("expected archive_decrypt_failed code to be preserved for retry routing, got %+v", job.ErrorCode)
+	}
 	events, err := store.ListEvents(ctx, id, 20)
 	if err != nil {
 		t.Fatalf("list events: %v", err)

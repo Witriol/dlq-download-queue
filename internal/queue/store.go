@@ -340,6 +340,8 @@ SET status = ?,
     END,
     download_speed = 0,
     eta_seconds = NULL,
+    error = NULL,
+    error_code = NULL,
     updated_at = ?,
     completed_at = ?
 WHERE id = ?
@@ -360,6 +362,23 @@ SET status = ?,
     eta_seconds = NULL,
     error = NULL,
     error_code = NULL,
+    updated_at = ?
+WHERE id = ?
+`, StatusDecrypting, bytesDone, bytesDone, now, id)
+	return err
+}
+
+func (s *Store) MarkDecryptingRetry(ctx context.Context, id int64, bytesDone int64) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx, `
+UPDATE jobs
+SET status = ?,
+    bytes_done = CASE
+      WHEN ? > 0 THEN ?
+      ELSE bytes_done
+    END,
+    download_speed = 0,
+    eta_seconds = NULL,
     updated_at = ?
 WHERE id = ?
 `, StatusDecrypting, bytesDone, bytesDone, now, id)
