@@ -144,9 +144,6 @@
               <td class="cell-path" data-label="Path">{folderPath(job)}</td>
               <td class="cell-url" data-label="URL">
                 <div>{job.url}</div>
-                {#if job.error_code}
-                  <div class="badge">error: {job.error_code} {job.error}</div>
-                {/if}
               </td>
               <td class="actions-col" data-label="Actions">
                 <div class="actions row-actions">
@@ -243,6 +240,13 @@
                 </div>
               </td>
             </tr>
+            {#if job.error_code}
+              <tr class="row-error" data-status={job.status}>
+                <td colspan="9" class="cell-row-error">
+                  <span class="error-inline">error: {job.error_code} {job.error}</span>
+                </td>
+              </tr>
+            {/if}
           {/each}
         </tbody>
       </table>

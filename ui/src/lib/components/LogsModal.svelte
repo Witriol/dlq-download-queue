@@ -13,11 +13,32 @@
   export let onClose = () => {};
   export let onRefresh = () => {};
 
+  const localTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local';
+
   function onBackdropKeydown(event) {
     if (event.key === 'Enter' || event.key === ' ' || event.key === 'Escape') {
       event.preventDefault();
       onClose();
     }
+  }
+
+  function formatEventLine(line) {
+    const text = typeof line === 'string' ? line : '';
+    const match = text.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)\s+(\w+)\s+(.*)$/);
+    if (!match) return text;
+    const dt = new Date(match[1]);
+    if (Number.isNaN(dt.getTime())) return text;
+    const ts = dt.toLocaleString(undefined, {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+      timeZoneName: 'short'
+    });
+    return `${ts} ${match[2]} ${match[3]}`;
   }
 </script>
 
@@ -35,7 +56,7 @@
       <div>
         <h2 style="margin: 0;">Job Events</h2>
         {#if logsJob}
-          <p class="notice">Job #{logsJob.id} · {displayStatus(logsJob)}</p>
+          <p class="notice">Job #{logsJob.id} · {displayStatus(logsJob)} · {localTimeZone}</p>
         {/if}
       </div>
       <button class="btn icon-btn close-btn" type="button" aria-label="Close dialog" on:click={onClose}>
@@ -67,7 +88,7 @@
         <div class="result-item">No events yet.</div>
       {:else}
         {#each logsEvents as line}
-          <div class="result-item">{line}</div>
+          <div class="result-item">{formatEventLine(line)}</div>
         {/each}
       {/if}
     </div>

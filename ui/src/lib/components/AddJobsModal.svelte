@@ -1,6 +1,7 @@
 <script>
   export let show = false;
   export let addOutDir = '';
+  export let addBatchSubfolder = '';
   export let addUrlsText = '';
   export let addArchivePassword = '';
   export let outDirPlaceholder = 'Select a preset or type a path';
@@ -55,6 +56,17 @@
           <input class="grow-input" id="add-out-dir" type="text" placeholder={outDirPlaceholder} bind:value={addOutDir} />
           <button class="btn ghost" type="button" on:click={onOpenBrowser}>Browse</button>
         </div>
+      </div>
+      <div class="form-field">
+        <label for="add-batch-subfolder">Batch Subfolder</label>
+        <input
+          id="add-batch-subfolder"
+          type="text"
+          bind:value={addBatchSubfolder}
+          placeholder="Optional — appended to Out Directory for all URLs"
+          autocomplete="off"
+        />
+        <p class="field-hint">Useful for multipart archives: put all parts into one folder.</p>
       </div>
       {#if outDirPresets.length > 0}
         <div class="presets-row">
