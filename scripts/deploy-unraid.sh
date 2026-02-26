@@ -118,7 +118,7 @@ if [[ "${DEPLOY_CLI}" == "true" ]]; then
     -t "${IMAGE_TAG_VERSIONED}" \
     -t "${IMAGE_TAG_LATEST}" \
     "${repo_root}"
-  IMAGES_TO_SAVE+=("${IMAGE_TAG_LATEST}" "${IMAGE_TAG_VERSIONED}")
+  IMAGES_TO_SAVE+=("${IMAGE_TAG_LATEST}")
 fi
 
 if [[ "${DEPLOY_WEBUI}" == "true" ]]; then
@@ -128,7 +128,7 @@ if [[ "${DEPLOY_WEBUI}" == "true" ]]; then
     -t "${WEBUI_IMAGE_TAG_VERSIONED}" \
     -t "${WEBUI_IMAGE_TAG_LATEST}" \
     "${repo_root}"
-  IMAGES_TO_SAVE+=("${WEBUI_IMAGE_TAG_LATEST}" "${WEBUI_IMAGE_TAG_VERSIONED}")
+  IMAGES_TO_SAVE+=("${WEBUI_IMAGE_TAG_LATEST}")
 fi
 
 printf "==> Transferring image to %s\n" "${REMOTE_HOST}"
@@ -168,7 +168,8 @@ docker run -d --name ${CONTAINER_NAME} --restart unless-stopped \
   -e PUID=${PUID} \
   -e PGID=${PGID} \
   -e TZ=${TZ} \
-  ${IMAGE_TAG_VERSIONED}"
+  ${IMAGE_TAG_LATEST} && \
+for img in \$(docker images --format '{{.Repository}}:{{.Tag}}' ${IMAGE_REPO} | awk '\$0 !~ /:latest$/'); do docker rmi \"\${img}\" >/dev/null 2>&1 || true; done"
 fi
 
 if [[ "${DEPLOY_WEBUI}" == "true" ]]; then
@@ -181,7 +182,8 @@ docker run -d --name ${WEBUI_CONTAINER_NAME} --restart unless-stopped \
   -e HOST=0.0.0.0 \
   -e PORT=${DLQ_WEBUI_PORT} \
   -e DLQ_API=http://dlq:${DLQ_HTTP_PORT} \
-  ${WEBUI_IMAGE_TAG_VERSIONED}"
+  ${WEBUI_IMAGE_TAG_LATEST} && \
+for img in \$(docker images --format '{{.Repository}}:{{.Tag}}' ${WEBUI_IMAGE_REPO} | awk '\$0 !~ /:latest$/'); do docker rmi \"\${img}\" >/dev/null 2>&1 || true; done"
 fi
 
 ssh "${REMOTE_HOST}" "${REMOTE_CMD}"
