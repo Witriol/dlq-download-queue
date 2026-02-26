@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.4 - 2026-02-26
+
+- Added multipart-aware postprocess retry flow (wait for sibling parts and decrypt from first archive volume).
+- Classified transient download `status=509` failures as `quota_exceeded` with delayed retry.
+- Refined Web UI for desktop/mobile: clearer dialogs, inline error rows, and always-visible desktop filters.
+
 ## 0.2.3 - 2026-02-17
 
 - Added MEGA post-download payload decryption in the runner (`mega decrypt started/completed/failed` events).
