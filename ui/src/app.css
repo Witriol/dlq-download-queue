@@ -580,25 +580,28 @@ textarea {
 }
 
 .table .cell-row-error {
-  display: flex;
-  justify-content: flex-start;
+  overflow: visible;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-overflow: clip;
   padding-top: 0;
   padding-bottom: 10px;
   border-bottom: 1px solid var(--line);
 }
 
 .error-inline {
-  display: inline-flex;
-  width: fit-content;
-  max-width: 100%;
+  display: inline-block;
+  flex: 0 0 auto;
+  width: max-content;
+  max-width: none;
   font-size: 12px;
   color: #fecaca;
   background: rgba(248, 113, 113, 0.14);
   border: 1px solid rgba(248, 113, 113, 0.35);
   border-radius: 10px;
   padding: 7px 10px;
-  white-space: normal;
-  word-break: break-word;
+  white-space: nowrap;
+  word-break: normal;
 }
 
 .status {
@@ -1084,10 +1087,11 @@ label.small {
   }
 
   .table td.cell-progress {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    justify-content: center;
+    vertical-align: middle;
+  }
+
+  .table td.cell-progress .progress-track {
+    margin-top: 5px;
   }
 }
 
