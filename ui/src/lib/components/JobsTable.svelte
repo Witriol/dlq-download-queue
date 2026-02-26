@@ -1,4 +1,5 @@
 <script>
+  import { onMount } from 'svelte';
   import { fileName, folderPath, formatETA, formatProgress, formatSpeed } from '$lib/format';
   import { displayStatus, displayStatusFilter, isWebshareJob } from '$lib/status';
 
@@ -22,6 +23,7 @@
   export let onJobAction = () => {};
 
   let showFilters = false;
+  let isMobile = false;
 
   const sortOptions = [
     { value: 'id', label: 'ID' },
@@ -33,6 +35,21 @@
     { value: 'path', label: 'Path' },
     { value: 'url', label: 'URL' }
   ];
+
+  onMount(() => {
+    if (typeof window === 'undefined') return undefined;
+    const mediaQuery = window.matchMedia('(max-width: 960px)');
+    const updateViewport = () => {
+      isMobile = mediaQuery.matches;
+    };
+    updateViewport();
+    if (typeof mediaQuery.addEventListener === 'function') {
+      mediaQuery.addEventListener('change', updateViewport);
+      return () => mediaQuery.removeEventListener('change', updateViewport);
+    }
+    mediaQuery.addListener(updateViewport);
+    return () => mediaQuery.removeListener(updateViewport);
+  });
 </script>
 
 <section class="panel">
@@ -43,17 +60,19 @@
           <option value={status}>{displayStatusFilter(status)}</option>
         {/each}
       </select>
-      <button
-        class="btn tiny ghost filter-toggle-btn"
-        type="button"
-        aria-expanded={showFilters}
-        on:click={() => (showFilters = !showFilters)}
-      >
-        {showFilters ? 'Less' : 'More'}
-        <span class="filter-chevron" aria-hidden="true">{showFilters ? '▴' : '▾'}</span>
-      </button>
+      {#if isMobile}
+        <button
+          class="btn tiny ghost filter-toggle-btn"
+          type="button"
+          aria-expanded={showFilters}
+          on:click={() => (showFilters = !showFilters)}
+        >
+          {showFilters ? 'Less' : 'More'}
+          <span class="filter-chevron" aria-hidden="true">{showFilters ? '▴' : '▾'}</span>
+        </button>
+      {/if}
     </div>
-    {#if showFilters}
+    {#if !isMobile || showFilters}
       <div class="filter-panel">
         <div class="toolbar-group">
           <label class="small">

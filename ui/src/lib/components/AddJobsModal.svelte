@@ -1,7 +1,6 @@
 <script>
   export let show = false;
   export let addOutDir = '';
-  export let addBatchSubfolder = '';
   export let addUrlsText = '';
   export let addArchivePassword = '';
   export let outDirPlaceholder = 'Select a preset or type a path';
@@ -52,32 +51,21 @@
       </div>
       <div class="form-field">
         <label for="add-out-dir">Out Directory</label>
-        <div class="actions">
-          <input class="grow-input" id="add-out-dir" type="text" placeholder={outDirPlaceholder} bind:value={addOutDir} />
-          <button class="btn ghost" type="button" on:click={onOpenBrowser}>Browse</button>
-        </div>
-      </div>
-      <div class="form-field">
-        <label for="add-batch-subfolder">Batch Subfolder</label>
-        <input
-          id="add-batch-subfolder"
-          type="text"
-          bind:value={addBatchSubfolder}
-          placeholder="Optional — appended to Out Directory for all URLs"
-          autocomplete="off"
-        />
-        <p class="field-hint">Useful for multipart archives: put all parts into one folder.</p>
-      </div>
-      {#if outDirPresets.length > 0}
-        <div class="presets-row">
-          <span class="presets-label">Presets</span>
-          <div class="presets-list">
-            {#each outDirPresets as preset}
-              <button class="preset-btn" type="button" on:click={() => (addOutDir = preset)}>{preset}</button>
-            {/each}
+        {#if outDirPresets.length > 0}
+          <div class="presets-row">
+            <span class="presets-label">Presets</span>
+            <div class="presets-list">
+              {#each outDirPresets as preset}
+                <button class="preset-btn" type="button" on:click={() => (addOutDir = preset)}>{preset}</button>
+              {/each}
+            </div>
           </div>
+        {/if}
+        <div class="actions out-dir-actions">
+          <button class="btn ghost" type="button" on:click={onOpenBrowser}>Browse</button>
+          <input class="grow-input" id="add-out-dir" type="text" placeholder={outDirPlaceholder} bind:value={addOutDir} />
         </div>
-      {/if}
+      </div>
       <div class="form-field">
         <label for="add-archive-password">Archive Password</label>
         <input

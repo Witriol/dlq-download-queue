@@ -92,10 +92,10 @@ textarea {
 
 .table-toolbar {
   width: 100%;
-  flex-direction: column;
-  gap: 0;
-  align-items: stretch;
-  justify-content: flex-start;
+  flex-direction: row;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .toolbar-primary {
@@ -122,12 +122,12 @@ textarea {
   flex-wrap: wrap;
   align-items: center;
   gap: 12px;
-  margin-top: 10px;
-  padding: 12px 14px;
-  background: rgba(0, 0, 0, 0.18);
-  border-radius: 10px;
-  border: 1px solid var(--line);
-  animation: panelFade 0.15s ease;
+  margin-top: 0;
+  padding: 0;
+  background: transparent;
+  border-radius: 0;
+  border: none;
+  animation: none;
 }
 
 .filter-panel label.small {
@@ -136,7 +136,7 @@ textarea {
 }
 
 .filter-panel .toolbar-sort {
-  margin-left: auto;
+  margin-left: 0;
 }
 
 .toolbar-group {
@@ -580,19 +580,25 @@ textarea {
 }
 
 .table .cell-row-error {
+  display: flex;
+  justify-content: flex-start;
   padding-top: 0;
   padding-bottom: 10px;
   border-bottom: 1px solid var(--line);
 }
 
 .error-inline {
-  display: block;
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
   font-size: 12px;
   color: #fecaca;
   background: rgba(248, 113, 113, 0.14);
   border: 1px solid rgba(248, 113, 113, 0.35);
   border-radius: 10px;
   padding: 7px 10px;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .status {
@@ -906,6 +912,11 @@ label.small {
 }
 
 .add-jobs-form {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
   gap: 16px;
 }
 
@@ -919,6 +930,15 @@ label.small {
   gap: 10px;
 }
 
+.add-jobs-form .out-dir-actions {
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+.add-jobs-form .out-dir-actions .btn {
+  flex-shrink: 0;
+}
+
 .add-jobs-form label {
   display: block;
 }
@@ -928,8 +948,14 @@ label.small {
 }
 
 .add-jobs-actions {
+  margin-top: auto;
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
   padding-top: 6px;
+  padding-bottom: 4px;
   gap: 10px;
+  background: linear-gradient(180deg, rgba(18, 24, 34, 0) 0%, rgba(18, 24, 34, 0.94) 22%);
 }
 
 .add-jobs-dialog .result-list {
@@ -995,8 +1021,10 @@ label.small {
 
 .browser-list {
   flex: 1;
-  min-height: 420px;
+  min-height: 0;
+  max-height: none;
   width: 100%;
+  overflow: auto;
 }
 
 .browser-footer {
@@ -1102,6 +1130,18 @@ label.small {
     flex-direction: column;
     align-items: stretch;
     gap: 10px;
+    margin-top: 10px;
+    padding: 12px 14px;
+    background: rgba(0, 0, 0, 0.18);
+    border-radius: 10px;
+    border: 1px solid var(--line);
+  }
+
+  .table-toolbar {
+    flex-direction: column;
+    gap: 0;
+    align-items: stretch;
+    justify-content: flex-start;
   }
 
   .filter-panel .toolbar-group {
@@ -1302,12 +1342,16 @@ label.small {
   .modal {
     left: 0;
     right: 0;
-    top: auto;
+    top: env(safe-area-inset-top);
     bottom: 0;
     transform: none;
     width: 100%;
+    height: calc(100dvh - env(safe-area-inset-top));
     max-height: calc(100dvh - env(safe-area-inset-top));
-    border-radius: 20px 20px 0 0;
+    border-radius: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 14px 14px calc(16px + env(safe-area-inset-bottom));
   }
 
   .modal.panel {
@@ -1321,33 +1365,16 @@ label.small {
     width: 100%;
     min-width: 0;
     min-height: 0;
-    max-height: calc(100dvh - env(safe-area-inset-top));
-    border-bottom-left-radius: 0;
-    border-bottom-right-radius: 0;
+    height: 100%;
+    max-height: 100%;
+    border-radius: 0;
   }
 
   .modal.add-jobs-dialog,
-  .browser-dialog {
-    height: calc(100dvh - env(safe-area-inset-top));
-    max-height: calc(100dvh - env(safe-area-inset-top));
-    padding: 14px 14px calc(16px + env(safe-area-inset-bottom));
-  }
-
-  .modal.add-jobs-dialog {
-    min-height: min(560px, calc(100dvh - 24px));
+  .modal.modal-logs,
+  .browser-dialog,
+  .modal.panel {
     overflow: auto;
-  }
-
-  .modal.modal-logs {
-    min-height: min(560px, calc(100dvh - 24px));
-  }
-
-  .browser-dialog {
-    min-height: min(600px, calc(100dvh - 24px));
-  }
-
-  .modal:not(.add-jobs-dialog):not(.browser-dialog) {
-    padding-bottom: calc(18px + env(safe-area-inset-bottom));
   }
 
   .modal-header {
@@ -1371,7 +1398,6 @@ label.small {
     align-items: flex-start;
   }
 
-  .browser-list,
   .logs-list {
     min-height: 200px;
   }

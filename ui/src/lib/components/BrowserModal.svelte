@@ -183,9 +183,11 @@
 
       <div class="browser-footer">
         <div class="actions">
-          <button class="btn primary" on:click={() => onSelectPath(browserPath)} disabled={!browserPath}>
-            {browserPath ? `Use "${browserPath.split('/').at(-1) || browserPath}"` : 'Navigate to a folder'}
-          </button>
+          {#if browserPath}
+            <button class="btn primary" on:click={() => onSelectPath(browserPath)}>
+              Use "{browserPath.split('/').at(-1) || browserPath}"
+            </button>
+          {/if}
           <button class="btn ghost browser-cancel-btn" on:click={onClose}>Cancel</button>
         </div>
       </div>

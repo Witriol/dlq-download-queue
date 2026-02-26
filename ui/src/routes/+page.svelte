@@ -26,7 +26,6 @@
   let showClearConfirm = false;
 
   let addOutDir = '';
-  let addBatchSubfolder = '';
   let addUrlsText = '';
   let addArchivePassword = '';
   let addResults = [];
@@ -144,55 +143,13 @@
     sortDir = sortDir === 'asc' ? 'desc' : 'asc';
   }
 
-  function sanitizeBatchSubfolder(input) {
-    const raw = (input ?? '').trim();
-    if (!raw) {
-      return { value: '', error: '' };
-    }
-    if (raw.startsWith('/')) {
-      return { value: '', error: 'Batch subfolder must be relative, not absolute.' };
-    }
-    if (raw.includes('\\')) {
-      return { value: '', error: 'Batch subfolder must use forward slashes (/).' };
-    }
-    const parts = raw.split('/').filter(Boolean);
-    if (parts.length === 0) {
-      return { value: '', error: '' };
-    }
-    for (const part of parts) {
-      if (part === '.' || part === '..') {
-        return { value: '', error: 'Batch subfolder must not contain . or .. segments.' };
-      }
-    }
-    return { value: parts.join('/'), error: '' };
-  }
-
-  function resolveBatchOutDir(outDir, subfolder) {
-    const base = (outDir ?? '').trim();
-    if (!base) {
-      return { value: '', error: 'Out directory is required.' };
-    }
-    const sanitized = sanitizeBatchSubfolder(subfolder);
-    if (sanitized.error) {
-      return { value: '', error: sanitized.error };
-    }
-    if (!sanitized.value) {
-      return { value: base, error: '' };
-    }
-    const baseNoTrailing = base === '/' ? '/' : base.replace(/\/+$/, '');
-    if (baseNoTrailing === '/') {
-      return { value: `/${sanitized.value}`, error: '' };
-    }
-    return { value: `${baseNoTrailing}/${sanitized.value}`, error: '' };
-  }
-
   async function handleAdd() {
     addError = '';
     addResults = [];
     const urls = parseUrls(addUrlsText);
-    const outDirResult = resolveBatchOutDir(addOutDir, addBatchSubfolder);
-    if (outDirResult.error) {
-      addError = outDirResult.error;
+    const outDir = (addOutDir ?? '').trim();
+    if (!outDir) {
+      addError = 'Out directory is required.';
       return;
     }
     if (urls.length === 0) {
@@ -202,14 +159,13 @@
     adding = true;
     addResults = await addJobsBatch({
       urls,
-      out_dir: outDirResult.value,
+      out_dir: outDir,
       archive_password: addArchivePassword || undefined
     }, (url) => detectSite(url) || undefined);
     adding = false;
     await refresh();
     if (addResults.every((r) => r.ok)) {
       addUrlsText = '';
-      addBatchSubfolder = '';
       addArchivePassword = '';
       addResults = [];
       showAdd = false;
@@ -491,7 +447,6 @@
 <AddJobsModal
   show={showAdd}
   bind:addOutDir
-  bind:addBatchSubfolder
   bind:addUrlsText
   bind:addArchivePassword
   {outDirPlaceholder}
