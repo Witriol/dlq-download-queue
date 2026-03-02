@@ -1180,6 +1180,117 @@ func TestRunnerDispatchesCompletedDecryptFromWorker(t *testing.T) {
 	}
 }
 
+func TestRunnerWaitsForRetryableFailedMultipartSiblingBeforeArchiveDecrypt(t *testing.T) {
+	store := newRunnerStore(t)
+	ctx := context.Background()
+	outDir := t.TempDir()
+	part1Name := "show.part1.rar"
+	part2Name := "show.part2.rar"
+	part1Path := filepath.Join(outDir, part1Name)
+	part2Path := filepath.Join(outDir, part2Name)
+	if err := os.WriteFile(part1Path, []byte("part1"), 0o644); err != nil {
+		t.Fatalf("write part1: %v", err)
+	}
+	if err := os.WriteFile(part2Path, []byte("part2"), 0o644); err != nil {
+		t.Fatalf("write part2: %v", err)
+	}
+
+	part1ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/show.part1.rar",
+		OutDir:      outDir,
+		Name:        part1Name,
+		MaxAttempts: 3,
+	})
+	if err != nil {
+		t.Fatalf("create part1 job: %v", err)
+	}
+	part2ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/show.part2.rar",
+		OutDir:      outDir,
+		Name:        part2Name,
+		MaxAttempts: 3,
+	})
+	if err != nil {
+		t.Fatalf("create part2 job: %v", err)
+	}
+
+	// part1 is downloading and completes; part2 failed with quota (retryable)
+	if err := store.MarkDownloading(ctx, part1ID, "aria2", "gid-part1"); err != nil {
+		t.Fatalf("mark part1 downloading: %v", err)
+	}
+	if err := store.MarkDownloading(ctx, part2ID, "aria2", "gid-part2"); err != nil {
+		t.Fatalf("mark part2 downloading: %v", err)
+	}
+	if err := store.MarkFailed(ctx, part2ID, "quota_exceeded", "quota exceeded; retry later", time.Now().UTC().Add(2*time.Hour)); err != nil {
+		t.Fatalf("mark part2 failed: %v", err)
+	}
+
+	fakeDec := &fakeArchiveDecryptor{attempted: true}
+	runner := &Runner{
+		Store:            store,
+		ArchiveDecryptor: fakeDec,
+		GetAutoDecrypt:   func() bool { return true },
+	}
+
+	// part1 finishes – should NOT decrypt because part2 is still retryable
+	part1Job, err := store.GetJob(ctx, part1ID)
+	if err != nil {
+		t.Fatalf("get part1 job: %v", err)
+	}
+	handled := runner.queueDecryptFromStatus(ctx, *part1Job, &downloader.Status{
+		Files: []struct {
+			Path string `json:"path"`
+		}{
+			{Path: part1Path},
+		},
+	}, 123)
+	if !handled {
+		t.Fatalf("expected queueDecryptFromStatus to handle multipart job")
+	}
+	time.Sleep(50 * time.Millisecond)
+	called, _, _, _ := fakeDec.snapshot()
+	if called {
+		t.Fatalf("did not expect decryptor call while sibling part is retryable-failed")
+	}
+	part1State, err := store.GetJob(ctx, part1ID)
+	if err != nil {
+		t.Fatalf("get part1 state: %v", err)
+	}
+	if part1State.Status != StatusDecrypting {
+		t.Fatalf("expected part1 status decrypting while waiting, got %s", part1State.Status)
+	}
+	events, err := store.ListEvents(ctx, part1ID, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if !eventsContain(events, "archive decrypt waiting: multipart set still downloading") {
+		t.Fatalf("expected wait event, got: %v", events)
+	}
+
+	// part2 eventually retries and completes; now part1 should decrypt
+	if err := store.Requeue(ctx, part2ID); err != nil {
+		t.Fatalf("requeue part2: %v", err)
+	}
+	if err := store.MarkCompleted(ctx, part2ID); err != nil {
+		t.Fatalf("mark part2 completed: %v", err)
+	}
+	if err := runner.dispatchCompletedDecrypt(ctx); err != nil {
+		t.Fatalf("dispatchCompletedDecrypt: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		called, _, _, _ := fakeDec.snapshot()
+		return called
+	})
+	_, archivePath, _, _ := fakeDec.snapshot()
+	if archivePath != part1Path {
+		t.Fatalf("expected decrypt from first part %q, got %q", part1Path, archivePath)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		updated, getErr := store.GetJob(ctx, part1ID)
+		return getErr == nil && updated.Status == StatusCompleted
+	})
+}
+
 func TestRunnerDispatchSkipsCompletedNoPasswordToAvoidLoop(t *testing.T) {
 	store := newRunnerStore(t)
 	ctx := context.Background()
@@ -1213,6 +1324,165 @@ func TestRunnerDispatchSkipsCompletedNoPasswordToAvoidLoop(t *testing.T) {
 	called, _, _, _ := fakeDec.snapshot()
 	if called {
 		t.Fatalf("expected completed no-password archive job to be skipped by dispatch worker")
+	}
+}
+
+func TestRunnerDeletesArchiveAfterExtraction(t *testing.T) {
+	store := newRunnerStore(t)
+	ctx := context.Background()
+	outDir := t.TempDir()
+	archiveName := "archive.rar"
+	archivePath := filepath.Join(outDir, archiveName)
+	if err := os.WriteFile(archivePath, []byte("data"), 0o644); err != nil {
+		t.Fatalf("write archive: %v", err)
+	}
+
+	id, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/archive.rar",
+		OutDir:      outDir,
+		Name:        archiveName,
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	fakeDL := &fakeDownloader{}
+	fakeDec := &fakeArchiveDecryptor{attempted: true}
+	runner := &Runner{
+		Store:            store,
+		Resolvers:        resolver.NewRegistry(&fakeResolver{}),
+		Downloader:       fakeDL,
+		ArchiveDecryptor: fakeDec,
+		GetAutoDecrypt:   func() bool { return true },
+		Concurrency:      1,
+	}
+
+	runner.tick(ctx)
+	fakeDL.status = &downloader.Status{
+		GID:          "gid-1",
+		Status:       "complete",
+		TotalLength:  "4",
+		CompletedLen: "4",
+		Files: []struct {
+			Path string `json:"path"`
+		}{
+			{Path: archivePath},
+		},
+	}
+
+	if err := runner.updateActive(ctx); err != nil {
+		t.Fatalf("updateActive: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		job, err := store.GetJob(ctx, id)
+		return err == nil && job.Status == StatusCompleted
+	})
+
+	if _, err := os.Stat(archivePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected archive to be deleted after extraction, stat err: %v", err)
+	}
+	events, err := store.ListEvents(ctx, id, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if !eventsContain(events, "archive cleanup: removed 1 file(s)") {
+		t.Fatalf("expected cleanup event, got: %v", events)
+	}
+}
+
+func TestRunnerDeletesAllPartsAndSiblingSkipsGracefully(t *testing.T) {
+	store := newRunnerStore(t)
+	ctx := context.Background()
+	outDir := t.TempDir()
+	part1Name := "show.part1.rar"
+	part2Name := "show.part2.rar"
+	part1Path := filepath.Join(outDir, part1Name)
+	part2Path := filepath.Join(outDir, part2Name)
+	if err := os.WriteFile(part1Path, []byte("part1"), 0o644); err != nil {
+		t.Fatalf("write part1: %v", err)
+	}
+	if err := os.WriteFile(part2Path, []byte("part2"), 0o644); err != nil {
+		t.Fatalf("write part2: %v", err)
+	}
+
+	part1ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/show.part1.rar",
+		OutDir:      outDir,
+		Name:        part1Name,
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create part1 job: %v", err)
+	}
+	part2ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/show.part2.rar",
+		OutDir:      outDir,
+		Name:        part2Name,
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create part2 job: %v", err)
+	}
+
+	// part2 finishes first and waits; part1 finishes last and triggers extraction
+	if err := store.MarkDownloading(ctx, part1ID, "aria2", "gid-1"); err != nil {
+		t.Fatalf("mark part1 downloading: %v", err)
+	}
+	if err := store.MarkDownloading(ctx, part2ID, "aria2", "gid-2"); err != nil {
+		t.Fatalf("mark part2 downloading: %v", err)
+	}
+
+	fakeDec := &fakeArchiveDecryptor{attempted: true}
+	runner := &Runner{
+		Store:            store,
+		ArchiveDecryptor: fakeDec,
+		GetAutoDecrypt:   func() bool { return true },
+	}
+
+	// part2 finishes: waits for part1
+	part2Job, err := store.GetJob(ctx, part2ID)
+	if err != nil {
+		t.Fatalf("get part2 job: %v", err)
+	}
+	runner.queueDecryptFromStatus(ctx, *part2Job, &downloader.Status{
+		Files: []struct {
+			Path string `json:"path"`
+		}{{Path: part2Path}},
+	}, 5)
+
+	time.Sleep(50 * time.Millisecond)
+	if called, _, _, _ := fakeDec.snapshot(); called {
+		t.Fatalf("expected no extraction while part1 still pending")
+	}
+
+	// part1 finishes: dispatches extraction (part2 is waiting sibling, not blocking)
+	if err := store.MarkCompleted(ctx, part1ID); err != nil {
+		t.Fatalf("mark part1 completed: %v", err)
+	}
+	if err := runner.dispatchCompletedDecrypt(ctx); err != nil {
+		t.Fatalf("dispatchCompletedDecrypt: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		job, err := store.GetJob(ctx, part2ID)
+		return err == nil && job.Status == StatusCompleted
+	})
+
+	// Both archive files must be deleted
+	if _, err := os.Stat(part1Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected part1 to be deleted")
+	}
+	if _, err := os.Stat(part2Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected part2 to be deleted")
+	}
+
+	// Verify the cleanup event was logged and part2 did not end up in decrypt_failed
+	events, err := store.ListEvents(ctx, part2ID, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if !eventsContain(events, "archive cleanup: removed 2 file(s)") {
+		t.Fatalf("expected cleanup event for 2 files, got: %v", events)
 	}
 }
 

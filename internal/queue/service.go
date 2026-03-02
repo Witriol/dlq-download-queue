@@ -253,6 +253,7 @@ type JobView struct {
 	EtaSeconds    int64  `json:"eta_seconds"`
 	Error         string `json:"error,omitempty"`
 	ErrorCode     string `json:"error_code,omitempty"`
+	NextRetryAt   string `json:"next_retry_at,omitempty"`
 	CreatedAt     string `json:"created_at"`
 	UpdatedAt     string `json:"updated_at"`
 }
@@ -280,6 +281,9 @@ func toView(j Job) JobView {
 	}
 	if j.ErrorCode.Valid {
 		v.ErrorCode = j.ErrorCode.String
+	}
+	if j.NextRetryAt.Valid {
+		v.NextRetryAt = j.NextRetryAt.String
 	}
 	if j.DownloadSpeed.Valid {
 		v.DownloadSpeed = j.DownloadSpeed.Int64

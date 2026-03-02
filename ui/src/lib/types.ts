@@ -23,6 +23,7 @@ export type JobView = {
   eta_seconds: number;
   error?: string;
   error_code?: string;
+  next_retry_at?: string;
   created_at: string;
   updated_at: string;
 };

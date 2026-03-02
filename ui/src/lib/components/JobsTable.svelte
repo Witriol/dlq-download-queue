@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { fileName, folderPath, formatETA, formatProgress, formatSpeed } from '$lib/format';
+  import { fileName, folderPath, formatETA, formatProgress, formatSpeed, retryIn } from '$lib/format';
   import { displayStatus, displayStatusFilter, isWebshareJob } from '$lib/status';
 
   export let jobs = [];
@@ -262,7 +262,7 @@
             {#if job.error_code}
               <tr class="row-error" data-status={job.status}>
                 <td colspan="9" class="cell-row-error">
-                  <span class="error-inline">error: {job.error_code} {job.error}</span>
+                  <span class="error-inline">error: {job.error_code}{retryIn(job.next_retry_at) || (job.error ? ` · ${job.error}` : '')}</span>
                 </td>
               </tr>
             {/if}

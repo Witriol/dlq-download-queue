@@ -89,6 +89,13 @@ export function formatETA(job: JobView): string {
   return humanDuration(job.eta_seconds);
 }
 
+export function retryIn(nextRetryAt: string | undefined): string {
+  if (!nextRetryAt) return '';
+  const seconds = Math.floor((new Date(nextRetryAt).getTime() - Date.now()) / 1000);
+  if (seconds <= 0) return ' · retrying soon';
+  return ` · retry in ${humanDuration(seconds)}`;
+}
+
 export function shortURL(url: string): string {
   if (!url) return '';
   if (url.length <= 64) return url;

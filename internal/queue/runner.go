@@ -399,21 +399,31 @@ func (r *Runner) runDecrypt(ctx context.Context, task decryptTask) {
 		}
 	}
 	if task.decryptArch && r.ArchiveDecryptor != nil {
-		_ = r.Store.AddEvent(ctx, task.jobID, "info", "archive decrypt started: "+filepath.Base(task.archivePath))
-		attempted, err := r.ArchiveDecryptor.MaybeDecrypt(ctx, task.archivePath, task.outDir, task.password)
-		if err != nil {
-			eventMsg := "archive decrypt failed: " + err.Error()
-			_ = r.Store.AddEvent(ctx, task.jobID, "error", eventMsg)
-			if markErr := r.Store.MarkPostprocessFailed(ctx, task.jobID, "archive decrypt failed", "archive_decrypt_failed"); markErr != nil {
-				log.Printf("runner mark archive decrypt failed error for job %d: %v", task.jobID, markErr)
-			}
-			_ = r.Store.ClearArchivePassword(ctx, task.jobID)
-			return
-		}
-		if attempted {
-			_ = r.Store.AddEvent(ctx, task.jobID, "info", "archive decrypted: "+filepath.Base(task.archivePath))
+		_, groupExplicit := multipartArchiveGroupKey(task.archivePath)
+		siblingDone := groupExplicit && func() bool {
+			_, err := os.Stat(task.archivePath)
+			return errors.Is(err, os.ErrNotExist)
+		}()
+		if siblingDone {
+			_ = r.Store.AddEvent(ctx, task.jobID, "info", "archive decrypt skipped: already extracted by sibling job")
 		} else {
-			_ = r.Store.AddEvent(ctx, task.jobID, "info", "archive decrypt skipped: not an archive")
+			_ = r.Store.AddEvent(ctx, task.jobID, "info", "archive decrypt started: "+filepath.Base(task.archivePath))
+			attempted, err := r.ArchiveDecryptor.MaybeDecrypt(ctx, task.archivePath, task.outDir, task.password)
+			if err != nil {
+				eventMsg := "archive decrypt failed: " + err.Error()
+				_ = r.Store.AddEvent(ctx, task.jobID, "error", eventMsg)
+				if markErr := r.Store.MarkPostprocessFailed(ctx, task.jobID, "archive decrypt failed", "archive_decrypt_failed"); markErr != nil {
+					log.Printf("runner mark archive decrypt failed error for job %d: %v", task.jobID, markErr)
+				}
+				_ = r.Store.ClearArchivePassword(ctx, task.jobID)
+				return
+			}
+			if attempted {
+				_ = r.Store.AddEvent(ctx, task.jobID, "info", "archive decrypted: "+filepath.Base(task.archivePath))
+				r.deleteArchiveFiles(ctx, task)
+			} else {
+				_ = r.Store.AddEvent(ctx, task.jobID, "info", "archive decrypt skipped: not an archive")
+			}
 		}
 	}
 	if markErr := r.Store.MarkCompleted(ctx, task.jobID); markErr != nil {
@@ -490,7 +500,7 @@ func (r *Runner) archiveDecryptWaitMessage(ctx context.Context, job Job, filePat
 		if otherExplicit {
 			groupExplicit = true
 		}
-		if isMultipartSiblingPending(other.Status) {
+		if isMultipartSiblingBlocking(other) {
 			pendingParts++
 		}
 	}
@@ -503,12 +513,51 @@ func (r *Runner) archiveDecryptWaitMessage(ctx context.Context, job Job, filePat
 	return ""
 }
 
-func isMultipartSiblingPending(status string) bool {
-	switch status {
+func isMultipartSiblingBlocking(job Job) bool {
+	switch job.Status {
 	case StatusQueued, StatusResolving, StatusDownloading, StatusPaused:
 		return true
+	case StatusFailed:
+		return job.NextRetryAt.Valid && job.MaxAttempts > 0 && job.Attempts < job.MaxAttempts
 	default:
 		return false
+	}
+}
+
+func (r *Runner) deleteArchiveFiles(ctx context.Context, task decryptTask) {
+	if task.archivePath == "" {
+		return
+	}
+	paths := map[string]struct{}{task.archivePath: {}}
+	groupKey, groupExplicit := multipartArchiveGroupKey(task.archivePath)
+	if groupKey != "" && groupExplicit {
+		if jobs, err := r.Store.ListJobs(ctx, "", false); err == nil {
+			for _, j := range jobs {
+				if j.OutDir != task.outDir {
+					continue
+				}
+				p := archivePathForJob(j)
+				if p == "" {
+					continue
+				}
+				if k, _ := multipartArchiveGroupKey(p); k == groupKey {
+					paths[p] = struct{}{}
+				}
+			}
+		}
+	}
+	var removed int
+	for p := range paths {
+		if err := os.Remove(p); err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				_ = r.Store.AddEvent(ctx, task.jobID, "error", "archive cleanup failed: "+filepath.Base(p)+": "+err.Error())
+			}
+			continue
+		}
+		removed++
+	}
+	if removed > 0 {
+		_ = r.Store.AddEvent(ctx, task.jobID, "info", "archive cleanup: removed "+strconv.Itoa(removed)+" file(s)")
 	}
 }
 
