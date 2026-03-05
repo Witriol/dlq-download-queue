@@ -1291,6 +1291,101 @@ func TestRunnerWaitsForRetryableFailedMultipartSiblingBeforeArchiveDecrypt(t *te
 	})
 }
 
+func TestRunnerWaitsForNonRetryableFailedMultipartSiblingBeforeArchiveDecrypt(t *testing.T) {
+	store := newRunnerStore(t)
+	ctx := context.Background()
+	outDir := t.TempDir()
+	part1Name := "show.part1.rar"
+	part2Name := "show.part2.rar"
+	part1Path := filepath.Join(outDir, part1Name)
+	part2Path := filepath.Join(outDir, part2Name)
+	if err := os.WriteFile(part1Path, []byte("part1"), 0o644); err != nil {
+		t.Fatalf("write part1: %v", err)
+	}
+	if err := os.WriteFile(part2Path, []byte("part2"), 0o644); err != nil {
+		t.Fatalf("write part2: %v", err)
+	}
+
+	part1ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/show.part1.rar",
+		OutDir:      outDir,
+		Name:        part1Name,
+		MaxAttempts: 3,
+	})
+	if err != nil {
+		t.Fatalf("create part1 job: %v", err)
+	}
+	part2ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/show.part2.rar",
+		OutDir:      outDir,
+		Name:        part2Name,
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create part2 job: %v", err)
+	}
+
+	// part1 finishes, part2 failed and exhausted attempts (non-retryable).
+	if err := store.MarkDownloading(ctx, part1ID, "aria2", "gid-part1"); err != nil {
+		t.Fatalf("mark part1 downloading: %v", err)
+	}
+	if err := store.MarkDownloading(ctx, part2ID, "aria2", "gid-part2"); err != nil {
+		t.Fatalf("mark part2 downloading: %v", err)
+	}
+	if err := store.MarkFailed(ctx, part2ID, "quota_exceeded", "quota exceeded; retry later", time.Now().UTC().Add(2*time.Hour)); err != nil {
+		t.Fatalf("mark part2 failed: %v", err)
+	}
+
+	failedPart2, err := store.GetJob(ctx, part2ID)
+	if err != nil {
+		t.Fatalf("get part2 failed state: %v", err)
+	}
+	if failedPart2.Attempts < failedPart2.MaxAttempts {
+		t.Fatalf("expected part2 to be non-retryable; attempts=%d max_attempts=%d", failedPart2.Attempts, failedPart2.MaxAttempts)
+	}
+
+	fakeDec := &fakeArchiveDecryptor{attempted: true}
+	runner := &Runner{
+		Store:            store,
+		ArchiveDecryptor: fakeDec,
+		GetAutoDecrypt:   func() bool { return true },
+	}
+
+	part1Job, err := store.GetJob(ctx, part1ID)
+	if err != nil {
+		t.Fatalf("get part1 job: %v", err)
+	}
+	handled := runner.queueDecryptFromStatus(ctx, *part1Job, &downloader.Status{
+		Files: []struct {
+			Path string `json:"path"`
+		}{
+			{Path: part1Path},
+		},
+	}, 123)
+	if !handled {
+		t.Fatalf("expected queueDecryptFromStatus to handle multipart job")
+	}
+	time.Sleep(50 * time.Millisecond)
+	called, _, _, _ := fakeDec.snapshot()
+	if called {
+		t.Fatalf("did not expect decryptor call while sibling part is failed")
+	}
+	part1State, err := store.GetJob(ctx, part1ID)
+	if err != nil {
+		t.Fatalf("get part1 state: %v", err)
+	}
+	if part1State.Status != StatusDecrypting {
+		t.Fatalf("expected part1 status decrypting while waiting, got %s", part1State.Status)
+	}
+	events, err := store.ListEvents(ctx, part1ID, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if !eventsContain(events, "archive decrypt waiting: multipart set still downloading") {
+		t.Fatalf("expected wait event, got: %v", events)
+	}
+}
+
 func TestRunnerDispatchSkipsCompletedNoPasswordToAvoidLoop(t *testing.T) {
 	store := newRunnerStore(t)
 	ctx := context.Background()

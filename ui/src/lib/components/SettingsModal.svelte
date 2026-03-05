@@ -1,6 +1,7 @@
 <script>
   export let show = false;
   export let settingsConcurrency = 2;
+  export let settingsMaxAttempts = 5;
   export let settingsAutoDecrypt = true;
   export let settingsError = '';
   export let settingsSaving = false;
@@ -42,6 +43,11 @@
         <label for="settings-concurrency">Concurrency (1-10)</label>
         <input id="settings-concurrency" type="number" min="1" max="10" bind:value={settingsConcurrency} />
         <p class="notice">Number of concurrent downloads</p>
+      </div>
+      <div>
+        <label for="settings-max-attempts">Max attempts (1-20)</label>
+        <input id="settings-max-attempts" type="number" min="1" max="20" bind:value={settingsMaxAttempts} />
+        <p class="notice">Maximum retries before marking a job failed</p>
       </div>
       <div>
         <label class="small" for="settings-auto-decrypt">

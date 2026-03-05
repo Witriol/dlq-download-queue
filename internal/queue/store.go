@@ -436,6 +436,15 @@ WHERE id = ?
 		return err
 	}
 	if maxAttempts > 0 && attempts >= maxAttempts {
+		// Exhausted attempt budget: ensure UI/API do not advertise a future retry.
+		if _, err := s.db.ExecContext(ctx, `
+UPDATE jobs
+SET next_retry_at = NULL,
+    updated_at = ?
+WHERE id = ?
+`, now, id); err != nil {
+			return err
+		}
 		eventMsg := fmt.Sprintf("max attempts reached (%d); no further retries", maxAttempts)
 		if attempts > maxAttempts {
 			eventMsg = fmt.Sprintf("attempts exceeded max (%d); no further retries", maxAttempts)
@@ -446,8 +455,16 @@ WHERE id = ?
 }
 
 func (s *Store) Requeue(ctx context.Context, id int64) error {
+	return s.requeue(ctx, id, false)
+}
+
+func (s *Store) RequeueResetAttempts(ctx context.Context, id int64) error {
+	return s.requeue(ctx, id, true)
+}
+
+func (s *Store) requeue(ctx context.Context, id int64, resetAttempts bool) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := s.db.ExecContext(ctx, `
+	query := `
 UPDATE jobs
 SET status = ?,
     error = NULL,
@@ -466,7 +483,32 @@ SET status = ?,
     completed_at = NULL,
     updated_at = ?
 WHERE id = ?
-`, StatusQueued, now, id)
+`
+	args := []any{StatusQueued, now, id}
+	if resetAttempts {
+		query = `
+UPDATE jobs
+SET status = ?,
+    error = NULL,
+    error_code = NULL,
+    next_retry_at = NULL,
+    deleted_at = NULL,
+    resolved_url = NULL,
+    filename = NULL,
+    size_bytes = NULL,
+    bytes_done = 0,
+    download_speed = 0,
+    eta_seconds = NULL,
+    engine = 'aria2',
+    engine_gid = NULL,
+    attempts = 0,
+    started_at = NULL,
+    completed_at = NULL,
+    updated_at = ?
+WHERE id = ?
+`
+	}
+	_, err := s.db.ExecContext(ctx, query, args...)
 	return err
 }
 

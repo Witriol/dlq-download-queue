@@ -518,7 +518,9 @@ func isMultipartSiblingBlocking(job Job) bool {
 	case StatusQueued, StatusResolving, StatusDownloading, StatusPaused:
 		return true
 	case StatusFailed:
-		return job.NextRetryAt.Valid && job.MaxAttempts > 0 && job.Attempts < job.MaxAttempts
+		// Treat any failed sibling as blocking so multipart extraction does not start with
+		// a permanently failed/missing part (for example quota 509 after max attempts).
+		return true
 	default:
 		return false
 	}

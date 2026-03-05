@@ -119,7 +119,7 @@ func (s *Service) Retry(ctx context.Context, id int64) error {
 			return err
 		}
 	}
-	if err := s.store.Requeue(ctx, id); err != nil {
+	if err := s.store.RequeueResetAttempts(ctx, id); err != nil {
 		return err
 	}
 	return s.store.AddEvent(ctx, id, "info", "retried")

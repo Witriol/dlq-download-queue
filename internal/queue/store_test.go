@@ -72,8 +72,41 @@ func TestStoreRequeueClearsFields(t *testing.T) {
 	if updated.BytesDone != 0 {
 		t.Fatalf("expected bytes_done to be reset, got %d", updated.BytesDone)
 	}
+	if updated.Attempts != 1 {
+		t.Fatalf("expected attempts to stay unchanged on Requeue, got %d", updated.Attempts)
+	}
 	if !updated.ArchivePassword.Valid || updated.ArchivePassword.String != "pass-1" {
 		t.Fatalf("expected archive password to persist")
+	}
+}
+
+func TestStoreRequeueResetAttemptsClearsAttempts(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	id, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/file",
+		OutDir:      "/data",
+		Name:        "file.bin",
+		MaxAttempts: 3,
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := store.MarkFailed(ctx, id, "download_error", "fail", time.Now().UTC().Add(10*time.Minute)); err != nil {
+		t.Fatalf("mark failed: %v", err)
+	}
+	if err := store.RequeueResetAttempts(ctx, id); err != nil {
+		t.Fatalf("requeue reset attempts: %v", err)
+	}
+	updated, err := store.GetJob(ctx, id)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if updated.Status != StatusQueued {
+		t.Fatalf("expected status queued, got %s", updated.Status)
+	}
+	if updated.Attempts != 0 {
+		t.Fatalf("expected attempts reset to 0, got %d", updated.Attempts)
 	}
 }
 
@@ -174,8 +207,15 @@ func TestMarkFailedLogsMaxAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create job: %v", err)
 	}
-	if err := store.MarkFailed(ctx, id, "download_error", "fail", time.Now().UTC()); err != nil {
+	if err := store.MarkFailed(ctx, id, "download_error", "fail", time.Now().UTC().Add(1*time.Hour)); err != nil {
 		t.Fatalf("mark failed: %v", err)
+	}
+	updated, err := store.GetJob(ctx, id)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if updated.NextRetryAt.Valid {
+		t.Fatalf("expected next_retry_at to be cleared when attempts exhausted, got %q", updated.NextRetryAt.String)
 	}
 	lines, err := store.ListEvents(ctx, id, 10)
 	if err != nil {

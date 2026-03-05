@@ -49,6 +49,7 @@
 
   let showSettings = false;
   let settingsConcurrency = 2;
+  let settingsMaxAttempts = 5;
   let settingsAutoDecrypt = true;
   let settingsError = '';
   let settingsSaving = false;
@@ -267,6 +268,7 @@
     try {
       const settings = await getSettings();
       settingsConcurrency = settings.concurrency;
+      settingsMaxAttempts = settings.max_attempts;
       settingsAutoDecrypt = settings.auto_decrypt;
     } catch (err) {
       settingsError = err instanceof Error ? err.message : String(err);
@@ -279,9 +281,11 @@
     try {
       const updated = await updateSettings({
         concurrency: settingsConcurrency,
+        max_attempts: settingsMaxAttempts,
         auto_decrypt: settingsAutoDecrypt
       });
       settingsConcurrency = updated.concurrency;
+      settingsMaxAttempts = updated.max_attempts;
       settingsAutoDecrypt = updated.auto_decrypt;
       showSettings = false;
     } catch (err) {
@@ -485,6 +489,7 @@
 <SettingsModal
   show={showSettings}
   bind:settingsConcurrency
+  bind:settingsMaxAttempts
   bind:settingsAutoDecrypt
   {settingsError}
   {settingsSaving}

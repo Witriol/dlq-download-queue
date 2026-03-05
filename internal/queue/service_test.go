@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	downloadclient "github.com/Witriol/dlq-download-queue/internal/downloader"
 )
@@ -377,5 +378,55 @@ func TestServiceRetryDecryptFailedQueuesDecryptOnly(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected retry decrypt queued event, got %v", events)
+	}
+}
+
+func TestServiceRetryResetsAttemptsForFailedJob(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	id, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/file",
+		OutDir:      "/data",
+		Name:        "file.bin",
+		MaxAttempts: 2,
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := store.MarkDownloading(ctx, id, "aria2", "gid-1"); err != nil {
+		t.Fatalf("mark downloading: %v", err)
+	}
+	if err := store.MarkFailed(ctx, id, "quota_exceeded", "quota exceeded; retry later", time.Now().UTC().Add(2*time.Hour)); err != nil {
+		t.Fatalf("mark failed: %v", err)
+	}
+	failedJob, err := store.GetJob(ctx, id)
+	if err != nil {
+		t.Fatalf("get failed job: %v", err)
+	}
+	if failedJob.Attempts == 0 {
+		t.Fatalf("expected failed job to have non-zero attempts before retry")
+	}
+
+	dl := &serviceTestDownloader{}
+	svc := NewService(store, dl, []string{"/data"})
+	if err := svc.Retry(ctx, id); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+
+	job, err := store.GetJob(ctx, id)
+	if err != nil {
+		t.Fatalf("get retried job: %v", err)
+	}
+	if job.Status != StatusQueued {
+		t.Fatalf("expected queued status after retry, got %s", job.Status)
+	}
+	if job.Attempts != 0 {
+		t.Fatalf("expected attempts reset to 0 after retry, got %d", job.Attempts)
+	}
+	if job.NextRetryAt.Valid {
+		t.Fatalf("expected next_retry_at cleared after retry, got %q", job.NextRetryAt.String)
+	}
+	if dl.removeHits != 1 {
+		t.Fatalf("expected downloader remove to be called once, got %d", dl.removeHits)
 	}
 }
