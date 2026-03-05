@@ -24,6 +24,10 @@ export type JobView = {
   error?: string;
   error_code?: string;
   next_retry_at?: string;
+  archive_group_id?: string;
+  archive_group_label?: string;
+  archive_part_number?: number;
+  archive_is_multipart?: boolean;
   created_at: string;
   updated_at: string;
 };

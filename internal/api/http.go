@@ -25,7 +25,9 @@ type Queue interface {
 	GetJob(ctx context.Context, id int64) (*JobView, error)
 	ListEvents(ctx context.Context, id int64, limit int) ([]string, error)
 	Retry(ctx context.Context, id int64) error
+	RetryDecryptGroup(ctx context.Context, groupID string) error
 	Remove(ctx context.Context, id int64) error
+	RemoveGroup(ctx context.Context, groupID string) error
 	Clear(ctx context.Context) error
 	Purge(ctx context.Context) error
 	Pause(ctx context.Context, id int64) error
@@ -46,6 +48,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/jobs", s.handleJobs)
 	mux.HandleFunc("/jobs/clear", s.handleJobsClear)
 	mux.HandleFunc("/jobs/purge", s.handleJobsPurge)
+	mux.HandleFunc("/jobs/groups/", s.handleGroup)
 	mux.HandleFunc("/jobs/", s.handleJob)
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/browse/mkdir", s.handleBrowseMkdir)
@@ -230,6 +233,48 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
+}
+
+func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/jobs/groups/")
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	groupID, err := url.PathUnescape(parts[0])
+	if err != nil || strings.TrimSpace(groupID) == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("invalid group id"))
+		return
+	}
+	action := strings.TrimSpace(parts[1])
+	if action == "" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	switch action {
+	case "retry-decrypt":
+		if err := s.Queue.RetryDecryptGroup(r.Context(), groupID); err != nil {
+			writeQueueErr(w, err)
+			return
+		}
+		log.Printf("action=retry-decrypt-group group=%q", groupID)
+	case "remove":
+		if err := s.Queue.RemoveGroup(r.Context(), groupID); err != nil {
+			writeQueueErr(w, err)
+			return
+		}
+		log.Printf("action=remove-group group=%q", groupID)
+	default:
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleJobsClear(w http.ResponseWriter, r *http.Request) {
@@ -486,6 +531,15 @@ func statusForQueueErr(err error) int {
 	}
 	if errors.Is(err, queue.ErrDownloaderNotConfigured) {
 		return http.StatusServiceUnavailable
+	}
+	if errors.Is(err, queue.ErrInvalidArchiveGroupID) {
+		return http.StatusBadRequest
+	}
+	if errors.Is(err, queue.ErrArchiveGroupBlocked) {
+		return http.StatusConflict
+	}
+	if errors.Is(err, queue.ErrArchiveGroupNoDecrypt) {
+		return http.StatusConflict
 	}
 	switch err.Error() {
 	case "missing out_dir",

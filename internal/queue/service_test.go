@@ -430,3 +430,474 @@ func TestServiceRetryResetsAttemptsForFailedJob(t *testing.T) {
 		t.Fatalf("expected downloader remove to be called once, got %d", dl.removeHits)
 	}
 }
+
+func TestServiceRetryDecryptGroupQueuesDecryptFailedParts(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	outDir := "/data"
+	part1ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/show.part1.rar",
+		OutDir:      outDir,
+		Name:        "show.part1.rar",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create part1: %v", err)
+	}
+	part2ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/show.part2.rar",
+		OutDir:      outDir,
+		Name:        "show.part2.rar",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create part2: %v", err)
+	}
+	if err := store.MarkCompleted(ctx, part1ID); err != nil {
+		t.Fatalf("mark part1 completed: %v", err)
+	}
+	if err := store.MarkPostprocessFailed(ctx, part2ID, "archive decrypt failed", "archive_decrypt_failed"); err != nil {
+		t.Fatalf("mark part2 decrypt failed: %v", err)
+	}
+
+	svc := NewService(store, &serviceTestDownloader{}, []string{"/data"})
+	views, err := svc.ListJobs(ctx, "", false)
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	groupID := ""
+	for _, v := range views {
+		if v.ID == part1ID || v.ID == part2ID {
+			groupID = v.ArchiveGroupID
+			break
+		}
+	}
+	if groupID == "" {
+		t.Fatalf("expected archive group id to be present")
+	}
+
+	if err := svc.RetryDecryptGroup(ctx, groupID); err != nil {
+		t.Fatalf("retry decrypt group: %v", err)
+	}
+	part1, err := store.GetJob(ctx, part1ID)
+	if err != nil {
+		t.Fatalf("get part1: %v", err)
+	}
+	if part1.Status != StatusCompleted {
+		t.Fatalf("expected part1 to stay completed, got %s", part1.Status)
+	}
+	part2, err := store.GetJob(ctx, part2ID)
+	if err != nil {
+		t.Fatalf("get part2: %v", err)
+	}
+	if part2.Status != StatusDecrypting {
+		t.Fatalf("expected part2 decrypting, got %s", part2.Status)
+	}
+	events, err := store.ListEvents(ctx, part2ID, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	found := false
+	for _, line := range events {
+		if strings.Contains(line, "retry decrypt queued (group)") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected group retry event, got %v", events)
+	}
+}
+
+func TestServiceRetryDecryptGroupBlockedByFailedDownload(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	outDir := "/data"
+	part1ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/show.part1.rar",
+		OutDir:      outDir,
+		Name:        "show.part1.rar",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create part1: %v", err)
+	}
+	part2ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/show.part2.rar",
+		OutDir:      outDir,
+		Name:        "show.part2.rar",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create part2: %v", err)
+	}
+	if err := store.MarkPostprocessFailed(ctx, part1ID, "archive decrypt failed", "archive_decrypt_failed"); err != nil {
+		t.Fatalf("mark part1 decrypt failed: %v", err)
+	}
+	if err := store.MarkFailed(ctx, part2ID, "quota_exceeded", "quota exceeded; retry later", time.Now().UTC().Add(2*time.Hour)); err != nil {
+		t.Fatalf("mark part2 failed: %v", err)
+	}
+
+	svc := NewService(store, &serviceTestDownloader{}, []string{"/data"})
+	views, err := svc.ListJobs(ctx, "", false)
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	groupID := ""
+	for _, v := range views {
+		if v.ID == part1ID || v.ID == part2ID {
+			groupID = v.ArchiveGroupID
+			break
+		}
+	}
+	if groupID == "" {
+		t.Fatalf("expected archive group id to be present")
+	}
+
+	err = svc.RetryDecryptGroup(ctx, groupID)
+	if err == nil || !strings.Contains(err.Error(), "failed downloads") {
+		t.Fatalf("expected failed download blocker error, got %v", err)
+	}
+	part1, err := store.GetJob(ctx, part1ID)
+	if err != nil {
+		t.Fatalf("get part1: %v", err)
+	}
+	if part1.Status != StatusDecryptFail {
+		t.Fatalf("expected part1 to remain decrypt_failed, got %s", part1.Status)
+	}
+}
+
+func TestServiceRemoveGroupRemovesAllJobs(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	outDir := "/data"
+	part1ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/show.part1.rar",
+		OutDir:      outDir,
+		Name:        "show.part1.rar",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create part1: %v", err)
+	}
+	part2ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/show.part2.rar",
+		OutDir:      outDir,
+		Name:        "show.part2.rar",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create part2: %v", err)
+	}
+
+	svc := NewService(store, &serviceTestDownloader{}, []string{"/data"})
+	views, err := svc.ListJobs(ctx, "", false)
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	groupID := ""
+	for _, v := range views {
+		if v.ID == part1ID || v.ID == part2ID {
+			groupID = v.ArchiveGroupID
+			break
+		}
+	}
+	if groupID == "" {
+		t.Fatalf("expected archive group id to be present")
+	}
+
+	if err := svc.RemoveGroup(ctx, groupID); err != nil {
+		t.Fatalf("remove group: %v", err)
+	}
+	part1, err := store.GetJob(ctx, part1ID)
+	if err != nil {
+		t.Fatalf("get part1: %v", err)
+	}
+	part2, err := store.GetJob(ctx, part2ID)
+	if err != nil {
+		t.Fatalf("get part2: %v", err)
+	}
+	if part1.Status != StatusDeleted || part2.Status != StatusDeleted {
+		t.Fatalf("expected both parts deleted, got part1=%s part2=%s", part1.Status, part2.Status)
+	}
+}
+
+func TestServiceRetryDecryptGroupIgnoresSupersededFailedPart(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	outDir := "/data"
+
+	oldPart2ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/show.part2.rar",
+		OutDir:      outDir,
+		Name:        "show.part2.rar",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create old part2: %v", err)
+	}
+	if err := store.MarkFailed(ctx, oldPart2ID, "quota_exceeded", "quota exceeded; retry later", time.Now().UTC().Add(2*time.Hour)); err != nil {
+		t.Fatalf("mark old part2 failed: %v", err)
+	}
+
+	part1ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/show.part1.rar",
+		OutDir:      outDir,
+		Name:        "show.part1.rar",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create part1: %v", err)
+	}
+	if err := store.MarkPostprocessFailed(ctx, part1ID, "archive decrypt failed", "archive_decrypt_failed"); err != nil {
+		t.Fatalf("mark part1 decrypt failed: %v", err)
+	}
+
+	newPart2ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/show.part2.rar",
+		OutDir:      outDir,
+		Name:        "show.part2.rar",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create new part2: %v", err)
+	}
+	if err := store.MarkCompleted(ctx, newPart2ID); err != nil {
+		t.Fatalf("mark new part2 completed: %v", err)
+	}
+
+	svc := NewService(store, &serviceTestDownloader{}, []string{"/data"})
+	views, err := svc.ListJobs(ctx, "", false)
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+
+	var (
+		groupID       string
+		oldPart2Group string
+	)
+	for _, v := range views {
+		if v.ID == part1ID {
+			groupID = v.ArchiveGroupID
+		}
+		if v.ID == oldPart2ID {
+			oldPart2Group = v.ArchiveGroupID
+		}
+	}
+	if groupID == "" {
+		t.Fatalf("expected archive group id for latest multipart jobs")
+	}
+	if oldPart2Group != "" {
+		t.Fatalf("expected superseded old part2 to be ungrouped, got %q", oldPart2Group)
+	}
+
+	if err := svc.RetryDecryptGroup(ctx, groupID); err != nil {
+		t.Fatalf("retry decrypt group: %v", err)
+	}
+	part1, err := store.GetJob(ctx, part1ID)
+	if err != nil {
+		t.Fatalf("get part1: %v", err)
+	}
+	if part1.Status != StatusDecrypting {
+		t.Fatalf("expected part1 decrypting, got %s", part1.Status)
+	}
+}
+
+func TestServiceListJobsGroupsRStyleMultipart(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	outDir := "/data"
+
+	part1ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/show.rar",
+		OutDir:      outDir,
+		Name:        "show.rar",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create rstyle part1: %v", err)
+	}
+	part2ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/show.r00",
+		OutDir:      outDir,
+		Name:        "show.r00",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create rstyle part2: %v", err)
+	}
+	if err := store.MarkCompleted(ctx, part1ID); err != nil {
+		t.Fatalf("mark part1 completed: %v", err)
+	}
+	if err := store.MarkCompleted(ctx, part2ID); err != nil {
+		t.Fatalf("mark part2 completed: %v", err)
+	}
+
+	svc := NewService(store, &serviceTestDownloader{}, []string{"/data"})
+	views, err := svc.ListJobs(ctx, "", false)
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+
+	var part1, part2 JobView
+	foundPart1 := false
+	foundPart2 := false
+	for _, v := range views {
+		if v.ID == part1ID {
+			part1 = v
+			foundPart1 = true
+		}
+		if v.ID == part2ID {
+			part2 = v
+			foundPart2 = true
+		}
+	}
+	if !foundPart1 || !foundPart2 {
+		t.Fatalf("expected both rstyle jobs in list")
+	}
+	if !part1.ArchiveIsMultipart || !part2.ArchiveIsMultipart {
+		t.Fatalf("expected rstyle jobs to be marked multipart, got part1=%v part2=%v", part1.ArchiveIsMultipart, part2.ArchiveIsMultipart)
+	}
+	if part1.ArchiveGroupID == "" || part2.ArchiveGroupID == "" || part1.ArchiveGroupID != part2.ArchiveGroupID {
+		t.Fatalf("expected same non-empty archive_group_id, got part1=%q part2=%q", part1.ArchiveGroupID, part2.ArchiveGroupID)
+	}
+	if part1.ArchivePartNumber != 1 || part2.ArchivePartNumber != 2 {
+		t.Fatalf("expected rstyle part numbers 1/2, got %d/%d", part1.ArchivePartNumber, part2.ArchivePartNumber)
+	}
+}
+
+func TestServiceListJobsPreservesGroupInFilteredView(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	outDir := "/data"
+	part1ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/show.part1.rar",
+		OutDir:      outDir,
+		Name:        "show.part1.rar",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create part1: %v", err)
+	}
+	part2ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/show.part2.rar",
+		OutDir:      outDir,
+		Name:        "show.part2.rar",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create part2: %v", err)
+	}
+	if err := store.MarkCompleted(ctx, part1ID); err != nil {
+		t.Fatalf("mark part1 completed: %v", err)
+	}
+	if err := store.MarkPostprocessFailed(ctx, part2ID, "archive decrypt failed", "archive_decrypt_failed"); err != nil {
+		t.Fatalf("mark part2 decrypt failed: %v", err)
+	}
+
+	svc := NewService(store, &serviceTestDownloader{}, []string{"/data"})
+	views, err := svc.ListJobs(ctx, StatusDecryptFail, false)
+	if err != nil {
+		t.Fatalf("list decrypt_failed jobs: %v", err)
+	}
+	if len(views) != 1 {
+		t.Fatalf("expected one decrypt_failed job, got %d", len(views))
+	}
+	if views[0].ID != part2ID {
+		t.Fatalf("expected part2 in filtered view, got id=%d", views[0].ID)
+	}
+	if !views[0].ArchiveIsMultipart || views[0].ArchiveGroupID == "" {
+		t.Fatalf("expected grouped metadata in filtered view, got multipart=%v group=%q", views[0].ArchiveIsMultipart, views[0].ArchiveGroupID)
+	}
+}
+
+func TestServiceGetJobIncludesArchiveGroupFields(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	outDir := "/data"
+	part1ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/show.part1.rar",
+		OutDir:      outDir,
+		Name:        "show.part1.rar",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create part1: %v", err)
+	}
+	part2ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/show.part2.rar",
+		OutDir:      outDir,
+		Name:        "show.part2.rar",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create part2: %v", err)
+	}
+	if err := store.MarkCompleted(ctx, part1ID); err != nil {
+		t.Fatalf("mark part1 completed: %v", err)
+	}
+	if err := store.MarkPostprocessFailed(ctx, part2ID, "archive decrypt failed", "archive_decrypt_failed"); err != nil {
+		t.Fatalf("mark part2 decrypt failed: %v", err)
+	}
+
+	svc := NewService(store, &serviceTestDownloader{}, []string{"/data"})
+	view, err := svc.GetJob(ctx, part2ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if !view.ArchiveIsMultipart || view.ArchiveGroupID == "" {
+		t.Fatalf("expected grouped metadata on single-job endpoint, got multipart=%v group=%q", view.ArchiveIsMultipart, view.ArchiveGroupID)
+	}
+}
+
+func TestServiceListJobsGroupsMultipartByURLFilenameHint(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	outDir := "/data"
+
+	part1ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/files/show.part1.rar",
+		OutDir:      outDir,
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create part1: %v", err)
+	}
+	part2ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/files/show.part2.rar",
+		OutDir:      outDir,
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create part2: %v", err)
+	}
+
+	svc := NewService(store, &serviceTestDownloader{}, []string{"/data"})
+	views, err := svc.ListJobs(ctx, "", false)
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+
+	var part1, part2 JobView
+	foundPart1 := false
+	foundPart2 := false
+	for _, v := range views {
+		if v.ID == part1ID {
+			part1 = v
+			foundPart1 = true
+		}
+		if v.ID == part2ID {
+			part2 = v
+			foundPart2 = true
+		}
+	}
+	if !foundPart1 || !foundPart2 {
+		t.Fatalf("expected both multipart jobs in list")
+	}
+	if !part1.ArchiveIsMultipart || !part2.ArchiveIsMultipart {
+		t.Fatalf("expected URL-derived jobs to be grouped, got part1=%v part2=%v", part1.ArchiveIsMultipart, part2.ArchiveIsMultipart)
+	}
+	if part1.ArchiveGroupID == "" || part2.ArchiveGroupID == "" || part1.ArchiveGroupID != part2.ArchiveGroupID {
+		t.Fatalf("expected same non-empty archive_group_id, got part1=%q part2=%q", part1.ArchiveGroupID, part2.ArchiveGroupID)
+	}
+}

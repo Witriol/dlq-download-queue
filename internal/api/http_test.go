@@ -25,6 +25,9 @@ func TestStatusForQueueErr(t *testing.T) {
 		{name: "missing engine gid", err: queue.ErrMissingEngineGID, want: http.StatusConflict},
 		{name: "action not allowed", err: fmt.Errorf("%w: detail", queue.ErrActionNotAllowed), want: http.StatusConflict},
 		{name: "downloader missing", err: queue.ErrDownloaderNotConfigured, want: http.StatusServiceUnavailable},
+		{name: "invalid archive group id", err: fmt.Errorf("%w: invalid", queue.ErrInvalidArchiveGroupID), want: http.StatusBadRequest},
+		{name: "archive group blocked", err: fmt.Errorf("%w: still downloading", queue.ErrArchiveGroupBlocked), want: http.StatusConflict},
+		{name: "archive group no decrypt failures", err: fmt.Errorf("%w: none", queue.ErrArchiveGroupNoDecrypt), want: http.StatusConflict},
 		{name: "unknown", err: errors.New("boom"), want: http.StatusInternalServerError},
 	}
 	for _, tt := range tests {
@@ -35,7 +38,11 @@ func TestStatusForQueueErr(t *testing.T) {
 }
 
 type stubQueue struct {
-	pauseErr error
+	pauseErr              error
+	retryGroupErr         error
+	removeGroupErr        error
+	retryGroupCalledWith  string
+	removeGroupCalledWith string
 }
 
 func (q *stubQueue) CreateJob(ctx context.Context, url, outDir, name, site, archivePassword string, maxAttempts int) (int64, error) {
@@ -58,8 +65,18 @@ func (q *stubQueue) Retry(ctx context.Context, id int64) error {
 	return nil
 }
 
+func (q *stubQueue) RetryDecryptGroup(ctx context.Context, groupID string) error {
+	q.retryGroupCalledWith = groupID
+	return q.retryGroupErr
+}
+
 func (q *stubQueue) Remove(ctx context.Context, id int64) error {
 	return nil
+}
+
+func (q *stubQueue) RemoveGroup(ctx context.Context, groupID string) error {
+	q.removeGroupCalledWith = groupID
+	return q.removeGroupErr
 }
 
 func (q *stubQueue) Clear(ctx context.Context) error {
@@ -121,5 +138,68 @@ func TestRedactURLForLog(t *testing.T) {
 	got = redactURLForLog("https://example.com/file.bin")
 	if got != "https://example.com/file.bin" {
 		t.Fatalf("url without fragment should be unchanged, got %q", got)
+	}
+}
+
+func TestHandleGroupRetryDecrypt(t *testing.T) {
+	q := &stubQueue{}
+	srv := &Server{Queue: q}
+	req := httptest.NewRequest(http.MethodPost, "/jobs/groups/ag_test/retry-decrypt", strings.NewReader("{}"))
+	rec := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if q.retryGroupCalledWith != "ag_test" {
+		t.Fatalf("expected retry group id ag_test, got %q", q.retryGroupCalledWith)
+	}
+}
+
+func TestHandleGroupRemove(t *testing.T) {
+	q := &stubQueue{}
+	srv := &Server{Queue: q}
+	req := httptest.NewRequest(http.MethodPost, "/jobs/groups/ag_test/remove", strings.NewReader("{}"))
+	rec := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if q.removeGroupCalledWith != "ag_test" {
+		t.Fatalf("expected remove group id ag_test, got %q", q.removeGroupCalledWith)
+	}
+}
+
+func TestHandleGroupRetryDecryptBlockedMapsToConflict(t *testing.T) {
+	q := &stubQueue{
+		retryGroupErr: fmt.Errorf("%w: group still downloading; retry decrypt unavailable", queue.ErrArchiveGroupBlocked),
+	}
+	srv := &Server{Queue: q}
+	req := httptest.NewRequest(http.MethodPost, "/jobs/groups/ag_test/retry-decrypt", strings.NewReader("{}"))
+	rec := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rec.Code)
+	}
+}
+
+func TestHandleGroupRejectsExtraPathSegments(t *testing.T) {
+	q := &stubQueue{}
+	srv := &Server{Queue: q}
+	req := httptest.NewRequest(http.MethodPost, "/jobs/groups/ag_test/remove/extra", strings.NewReader("{}"))
+	rec := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+	if q.removeGroupCalledWith != "" {
+		t.Fatalf("expected remove not to be called, got group id %q", q.removeGroupCalledWith)
 	}
 }

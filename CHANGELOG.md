@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.5 - 2026-03-05
+
+- Added multipart archive grouping across API/UI, including job group metadata and group actions (`retry decrypt`, `remove`) via dedicated group endpoints.
+- Added strict group-route parsing and typed group errors with explicit HTTP mapping (`400` invalid group id, `409` blocked/no decrypt failures).
+- Improved multipart processing: latest-per-part selection (ignores stale jobs), blocking sibling waits before extraction, and support for both `.partNN.rar` and legacy `.rar/.r00`.
+- Added URL basename fallback for archive grouping/path inference when `name`/`filename` is not resolved yet.
+- `GET /jobs/{id}` now returns archive grouping metadata aligned with `GET /jobs` list responses.
+- Added a UI setting for default `max attempts`; manual retry now resets attempts to a fresh retry budget.
+- Updated grouped UI behavior: group controls stay visible in filtered views, per-file retry remains, and grouped children hide per-file remove.
+- Moved transient queue fetch failures to a header red badge beside title/version and kept `status=509` mapped as `quota_exceeded` with delayed retry.
+- Expanded tests for multipart wait/state handling, group API/status behavior, filtered grouping, and URL/r-style grouping.
+
 ## 0.2.4 - 2026-02-26
 
 - Added multipart-aware postprocess retry flow (wait for sibling parts and decrypt from first archive volume).

@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { addJobsBatch, browse, clearJobs, getEvents, getMeta, getSettings, listJobs, mkdir, postAction, updateSettings } from '$lib/api';
+  import { addJobsBatch, browse, clearJobs, getEvents, getMeta, getSettings, listJobs, mkdir, postAction, postGroupAction, updateSettings } from '$lib/api';
   import { humanBytes, humanDuration } from '$lib/format';
   import { countsFor, detectSite, parseUrls, sortJobs } from '$lib/job-utils';
   import JobsTable from '$lib/components/JobsTable.svelte';
@@ -177,6 +177,16 @@
     lastError = '';
     try {
       await postAction(id, action);
+      await refresh();
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function handleGroupAction(groupId, action) {
+    lastError = '';
+    try {
+      await postGroupAction(groupId, action);
       await refresh();
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
@@ -380,6 +390,9 @@
         {#if metaVersion}
           <span class="badge badge-version">{metaVersion}</span>
         {/if}
+        {#if lastError}
+          <span class="badge badge-error" title={lastError}>Error: {lastError}</span>
+        {/if}
       </div>
     </div>
     <div class="toolbar">
@@ -417,10 +430,6 @@
     </div>
   </div>
 
-  {#if lastError}
-    <p class="notice">Error: {lastError}</p>
-  {/if}
-
   <JobsTable
     {jobs}
     {sortedJobs}
@@ -439,6 +448,7 @@
     onRequestClear={() => (showClearConfirm = true)}
     onOpenLogs={openLogs}
     onJobAction={handleAction}
+    onGroupAction={handleGroupAction}
   />
 </div>
 

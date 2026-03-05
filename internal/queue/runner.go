@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -482,8 +483,7 @@ func (r *Runner) archiveDecryptWaitMessage(ctx context.Context, job Job, filePat
 		log.Printf("runner multipart wait scan error for job %d: %v", job.ID, err)
 		return ""
 	}
-	pendingParts := 0
-	seenSibling := false
+	siblings := make([]Job, 0)
 	for _, other := range jobs {
 		if other.ID == job.ID {
 			continue
@@ -496,16 +496,20 @@ func (r *Runner) archiveDecryptWaitMessage(ctx context.Context, job Job, filePat
 		if otherGroupKey == "" || otherGroupKey != groupKey {
 			continue
 		}
-		seenSibling = true
+		siblings = append(siblings, other)
 		if otherExplicit {
 			groupExplicit = true
 		}
-		if isMultipartSiblingBlocking(other) {
+	}
+	if !groupExplicit && len(siblings) == 0 {
+		return ""
+	}
+	latestSiblings := latestArchiveJobsByPart(siblings)
+	pendingParts := 0
+	for _, sibling := range latestSiblings {
+		if isMultipartSiblingBlocking(sibling) {
 			pendingParts++
 		}
-	}
-	if !groupExplicit && !seenSibling {
-		return ""
 	}
 	if pendingParts > 0 {
 		return "archive decrypt waiting: multipart set still downloading (" + strconv.Itoa(pendingParts) + " part job(s))"
@@ -677,9 +681,27 @@ func archivePathForJob(job Job) string {
 		name = sanitizeFilename(job.Filename.String)
 	}
 	if name == "" {
+		name = archiveFilenameFromURL(job.URL)
+	}
+	if name == "" {
 		return ""
 	}
 	return filepath.Join(job.OutDir, name)
+}
+
+func archiveFilenameFromURL(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	base := filepath.Base(strings.TrimSpace(parsed.Path))
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		return ""
+	}
+	if unescaped, err := url.PathUnescape(base); err == nil {
+		base = unescaped
+	}
+	return sanitizeFilename(base)
 }
 
 func nullString(v sql.NullString) string {

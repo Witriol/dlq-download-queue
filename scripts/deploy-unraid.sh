@@ -113,7 +113,7 @@ fi
 IMAGES_TO_SAVE=()
 if [[ "${DEPLOY_CLI}" == "true" ]]; then
   printf "==> Building %s (version %s)\n" "${IMAGE_TAG_VERSIONED}" "${VERSION}"
-  docker buildx build --platform linux/amd64 --load \
+  docker build --platform linux/amd64 \
     --build-arg VERSION="${VERSION}" \
     -t "${IMAGE_TAG_VERSIONED}" \
     -t "${IMAGE_TAG_LATEST}" \
@@ -123,7 +123,7 @@ fi
 
 if [[ "${DEPLOY_WEBUI}" == "true" ]]; then
   printf "==> Building %s (version %s)\n" "${WEBUI_IMAGE_TAG_VERSIONED}" "${VERSION}"
-  docker buildx build --platform linux/amd64 --load \
+  docker build --platform linux/amd64 \
     -f "${repo_root}/Dockerfile.webui" \
     -t "${WEBUI_IMAGE_TAG_VERSIONED}" \
     -t "${WEBUI_IMAGE_TAG_LATEST}" \

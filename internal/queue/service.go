@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -16,6 +17,9 @@ var (
 	ErrDownloaderNotConfigured = errors.New("downloader_not_configured")
 	ErrMissingEngineGID        = errors.New("missing_engine_gid")
 	ErrActionNotAllowed        = errors.New("action_not_allowed")
+	ErrInvalidArchiveGroupID   = errors.New("invalid_archive_group_id")
+	ErrArchiveGroupBlocked     = errors.New("archive_group_blocked")
+	ErrArchiveGroupNoDecrypt   = errors.New("archive_group_no_decrypt_failed_jobs")
 )
 
 type Service struct {
@@ -83,10 +87,18 @@ func (s *Service) ListJobs(ctx context.Context, status string, includeDeleted bo
 	if err != nil {
 		return nil, err
 	}
+	groupJobs := jobs
+	if status != "" {
+		groupJobs, err = s.store.ListJobs(ctx, "", includeDeleted)
+		if err != nil {
+			return nil, err
+		}
+	}
 	out := make([]JobView, 0, len(jobs))
 	for _, j := range jobs {
 		out = append(out, toView(j))
 	}
+	enrichArchiveGroupViews(groupJobs, out)
 	return out, nil
 }
 
@@ -95,8 +107,13 @@ func (s *Service) GetJob(ctx context.Context, id int64) (*JobView, error) {
 	if err != nil {
 		return nil, err
 	}
-	v := toView(*j)
-	return &v, nil
+	groupJobs, err := s.store.ListJobs(ctx, "", j.DeletedAt.Valid)
+	if err != nil {
+		return nil, err
+	}
+	views := []JobView{toView(*j)}
+	enrichArchiveGroupViews(groupJobs, views)
+	return &views[0], nil
 }
 
 func (s *Service) ListEvents(ctx context.Context, id int64, limit int) ([]string, error) {
@@ -123,6 +140,78 @@ func (s *Service) Retry(ctx context.Context, id int64) error {
 		return err
 	}
 	return s.store.AddEvent(ctx, id, "info", "retried")
+}
+
+func (s *Service) RetryDecryptGroup(ctx context.Context, groupID string) error {
+	jobs, err := s.listArchiveGroupJobs(ctx, groupID)
+	if err != nil {
+		return err
+	}
+
+	for _, job := range jobs {
+		switch job.Status {
+		case StatusQueued, StatusResolving, StatusDownloading, StatusPaused:
+			return fmt.Errorf("%w: group still downloading; retry decrypt unavailable", ErrArchiveGroupBlocked)
+		case StatusFailed:
+			return fmt.Errorf("%w: group has failed downloads; retry those files first", ErrArchiveGroupBlocked)
+		case StatusDecrypting:
+			return fmt.Errorf("%w: group decrypt already in progress", ErrArchiveGroupBlocked)
+		}
+	}
+
+	var queued int
+	for _, job := range jobs {
+		if job.Status != StatusDecryptFail {
+			continue
+		}
+		if err := s.store.MarkDecryptingRetry(ctx, job.ID, job.BytesDone); err != nil {
+			return err
+		}
+		_ = s.store.AddEvent(ctx, job.ID, "info", "retry decrypt queued (group)")
+		queued++
+	}
+	if queued == 0 {
+		return fmt.Errorf("%w: group has no decrypt_failed jobs", ErrArchiveGroupNoDecrypt)
+	}
+	return nil
+}
+
+func (s *Service) RemoveGroup(ctx context.Context, groupID string) error {
+	jobs, err := s.listArchiveGroupJobs(ctx, groupID)
+	if err != nil {
+		return err
+	}
+	for _, job := range jobs {
+		if err := s.Remove(ctx, job.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) listArchiveGroupJobs(ctx context.Context, groupID string) ([]Job, error) {
+	groupKey, err := archiveGroupKeyFromID(groupID)
+	if err != nil {
+		return nil, err
+	}
+	jobs, err := s.store.ListJobs(ctx, "", false)
+	if err != nil {
+		return nil, err
+	}
+	matched := make([]Job, 0)
+	for _, job := range jobs {
+		if archiveGroupMatchesJob(job, groupKey) {
+			matched = append(matched, job)
+		}
+	}
+	matched = latestArchiveJobsByPart(matched)
+	if len(matched) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	sort.Slice(matched, func(i, j int) bool {
+		return matched[i].ID < matched[j].ID
+	})
+	return matched, nil
 }
 
 func (s *Service) Remove(ctx context.Context, id int64) error {
@@ -240,22 +329,26 @@ func (s *Service) removeEngineTask(ctx context.Context, gid string) error {
 
 // JobView is a light view for API/CLI.
 type JobView struct {
-	ID            int64  `json:"id"`
-	URL           string `json:"url"`
-	Site          string `json:"site"`
-	OutDir        string `json:"out_dir"`
-	Name          string `json:"name"`
-	Status        string `json:"status"`
-	Filename      string `json:"filename,omitempty"`
-	SizeBytes     int64  `json:"size_bytes,omitempty"`
-	BytesDone     int64  `json:"bytes_done"`
-	DownloadSpeed int64  `json:"download_speed"`
-	EtaSeconds    int64  `json:"eta_seconds"`
-	Error         string `json:"error,omitempty"`
-	ErrorCode     string `json:"error_code,omitempty"`
-	NextRetryAt   string `json:"next_retry_at,omitempty"`
-	CreatedAt     string `json:"created_at"`
-	UpdatedAt     string `json:"updated_at"`
+	ID                 int64  `json:"id"`
+	URL                string `json:"url"`
+	Site               string `json:"site"`
+	OutDir             string `json:"out_dir"`
+	Name               string `json:"name"`
+	Status             string `json:"status"`
+	Filename           string `json:"filename,omitempty"`
+	SizeBytes          int64  `json:"size_bytes,omitempty"`
+	BytesDone          int64  `json:"bytes_done"`
+	DownloadSpeed      int64  `json:"download_speed"`
+	EtaSeconds         int64  `json:"eta_seconds"`
+	Error              string `json:"error,omitempty"`
+	ErrorCode          string `json:"error_code,omitempty"`
+	NextRetryAt        string `json:"next_retry_at,omitempty"`
+	ArchiveGroupID     string `json:"archive_group_id,omitempty"`
+	ArchiveGroupLabel  string `json:"archive_group_label,omitempty"`
+	ArchivePartNumber  int    `json:"archive_part_number,omitempty"`
+	ArchiveIsMultipart bool   `json:"archive_is_multipart,omitempty"`
+	CreatedAt          string `json:"created_at"`
+	UpdatedAt          string `json:"updated_at"`
 }
 
 func toView(j Job) JobView {
@@ -294,13 +387,76 @@ func toView(j Job) JobView {
 	return v
 }
 
+func enrichArchiveGroupViews(jobs []Job, views []JobView) {
+	if len(jobs) == 0 || len(views) == 0 {
+		return
+	}
+	viewIndexByID := make(map[int64]int, len(views))
+	for i := range views {
+		viewIndexByID[views[i].ID] = i
+	}
+
+	type archiveGroupCandidate struct {
+		Explicit bool
+		Jobs     []Job
+	}
+	groups := make(map[string]archiveGroupCandidate)
+	for _, job := range jobs {
+		path := archivePathForJob(job)
+		groupKey, explicit := multipartArchiveGroupKey(path)
+		if groupKey == "" {
+			continue
+		}
+		candidate := groups[groupKey]
+		candidate.Explicit = candidate.Explicit || explicit
+		candidate.Jobs = append(candidate.Jobs, job)
+		groups[groupKey] = candidate
+	}
+
+	for groupKey, candidate := range groups {
+		latest := latestArchiveJobsByPart(candidate.Jobs)
+		if len(latest) < 2 || !candidate.Explicit {
+			continue
+		}
+		groupID := archiveGroupIDFromKey(groupKey)
+		groupLabel := archiveGroupLabelFromKey(groupKey)
+		for _, job := range latest {
+			label, part := archiveGroupLabelAndPartForJob(job)
+			if label != "" {
+				groupLabel = label
+				break
+			}
+			if part > 0 {
+				// keep scanning for readable label
+				continue
+			}
+		}
+		if groupID == "" {
+			continue
+		}
+		for _, job := range latest {
+			i, ok := viewIndexByID[job.ID]
+			if !ok {
+				continue
+			}
+			_, part := archiveGroupLabelAndPartForJob(job)
+			views[i].ArchiveGroupID = groupID
+			views[i].ArchiveGroupLabel = groupLabel
+			views[i].ArchivePartNumber = part
+			views[i].ArchiveIsMultipart = true
+		}
+	}
+}
+
 var _ interface {
 	CreateJob(context.Context, string, string, string, string, string, int) (int64, error)
 	ListJobs(context.Context, string, bool) ([]JobView, error)
 	GetJob(context.Context, int64) (*JobView, error)
 	ListEvents(context.Context, int64, int) ([]string, error)
 	Retry(context.Context, int64) error
+	RetryDecryptGroup(context.Context, string) error
 	Remove(context.Context, int64) error
+	RemoveGroup(context.Context, string) error
 	Clear(context.Context) error
 	Purge(context.Context) error
 	Pause(context.Context, int64) error

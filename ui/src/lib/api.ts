@@ -92,6 +92,15 @@ export async function postAction(id: string | number, action: 'retry' | 'remove'
   });
 }
 
+export async function postGroupAction(groupId: string, action: 'retry-decrypt' | 'remove'):
+  Promise<{ status: string }> {
+  return requestJson<{ status: string }>(`/api/jobs/groups/${encodeURIComponent(groupId)}/${action}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}'
+  });
+}
+
 export async function clearJobs(): Promise<{ status: string }> {
   return requestJson<{ status: string }>('/api/jobs/clear', {
     method: 'POST',
