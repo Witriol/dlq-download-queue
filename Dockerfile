@@ -1,10 +1,10 @@
-FROM golang:1.22-bullseye AS build
+FROM --platform=$BUILDPLATFORM golang:1.22-bullseye AS build
 WORKDIR /src
 COPY go.mod ./
 COPY . ./
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -mod=mod -ldflags "-X main.version=${VERSION}" -o /out/dlq ./cmd/dlq
-RUN CGO_ENABLED=0 go build -mod=mod -ldflags "-X main.version=${VERSION}" -o /out/dlqd ./cmd/dlqd
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=mod -ldflags "-X main.version=${VERSION}" -o /out/dlq ./cmd/dlq
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=mod -ldflags "-X main.version=${VERSION}" -o /out/dlqd ./cmd/dlqd
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends 7zip aria2 ca-certificates gosu passwd unar && update-ca-certificates && rm -rf /var/lib/apt/lists/*
