@@ -298,6 +298,8 @@ func parseMegaFileLink(raw string) (string, string, error) {
 			fileKey = strings.TrimSpace(parts[1])
 		}
 	}
+	fileID = strings.TrimRight(fileID, "=")
+	fileKey = strings.TrimRight(fileKey, "=")
 	if fileID == "" || fileKey == "" {
 		return "", "", errors.New("mega public file link required")
 	}

@@ -10,7 +10,9 @@ export function parseUrls(text: string): string[] {
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (!line || line.startsWith('#')) continue;
-    const tokens = line.split(/[\s,]+/).map((t) => t.trim()).filter(Boolean);
+    const tokens = line.split(/[\s,]+/)
+      .flatMap((t) => t.split(/(?=https?:\/\/)/))
+      .map((t) => t.trim()).filter(Boolean);
     out.push(...tokens);
   }
   return out;

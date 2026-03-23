@@ -62,6 +62,12 @@ func TestParseMegaFileLink(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "key with base64 padding",
+			url:     "https://mega.nz/file/AbCdEf12#QwErTy123_-=",
+			wantID:  "AbCdEf12",
+			wantKey: "QwErTy123_-",
+		},
+		{
 			name:    "invalid token",
 			url:     "https://mega.nz/file/AbCdEf12#bad+token",
 			wantErr: true,

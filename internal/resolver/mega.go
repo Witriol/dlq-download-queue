@@ -160,19 +160,25 @@ func parseMegaFileLink(rawURL string) (string, string, error) {
 		}
 	}
 
+	fileID = strings.TrimRight(fileID, "=")
+	fileKey = strings.TrimRight(fileKey, "=")
 	if fileID == "" || fileKey == "" {
 		return "", "", errors.New("mega_public_file_link_required")
 	}
-	if !isValidMegaToken(fileID) || !isValidMegaToken(fileKey) {
-		return "", "", errors.New("mega_link_invalid_tokens")
+	if bad := firstInvalidMegaTokenChar(fileID); bad != 0 {
+		return "", "", fmt.Errorf("mega_link_invalid_tokens:id_char_%U", bad)
+	}
+	if bad := firstInvalidMegaTokenChar(fileKey); bad != 0 {
+		return "", "", fmt.Errorf("mega_link_invalid_tokens:key_char_%U", bad)
 	}
 	return fileID, fileKey, nil
 }
 
 func isValidMegaToken(v string) bool {
-	if v == "" {
-		return false
-	}
+	return v != "" && firstInvalidMegaTokenChar(v) == 0
+}
+
+func firstInvalidMegaTokenChar(v string) rune {
 	for _, c := range v {
 		switch {
 		case c >= 'a' && c <= 'z':
@@ -180,10 +186,10 @@ func isValidMegaToken(v string) bool {
 		case c >= '0' && c <= '9':
 		case c == '-' || c == '_':
 		default:
-			return false
+			return c
 		}
 	}
-	return true
+	return 0
 }
 
 func decodeMegaBase64(raw string) ([]byte, error) {
