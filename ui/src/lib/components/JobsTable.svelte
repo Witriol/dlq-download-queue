@@ -151,6 +151,9 @@
       decryptDisabledReason = 'no decrypt failures in group';
     }
 
+    const decryptErrorJob = jobsInGroup.find((job) => job.status === 'decrypt_failed' && job.error);
+    const decryptError = decryptErrorJob ? decryptErrorJob.error.split('\n')[0] : '';
+
     return {
       groupId,
       label: jobsInGroup.find((job) => job.archive_group_label)?.archive_group_label || jobsInGroup[0].archive_group_id || groupId,
@@ -159,7 +162,8 @@
       stateText,
       statusTag,
       canRetryDecrypt,
-      decryptDisabledReason
+      decryptDisabledReason,
+      decryptError
     };
   }
 
@@ -273,6 +277,9 @@
                       <strong class="group-title">{row.summary.label}</strong>
                       <span class="group-status" data-status={row.summary.statusTag}>{groupStatusLabel(row.summary.statusTag)}</span>
                       <span class="group-meta">parts {row.summary.partsReady}/{row.summary.partsTotal}</span>
+                      {#if row.summary.decryptError}
+                        <span class="group-decrypt-error">{row.summary.decryptError}</span>
+                      {/if}
                     </div>
                     <div class="actions row-actions">
                       <button
@@ -433,7 +440,7 @@
                   </div>
                 </td>
               </tr>
-              {#if job.error_code}
+              {#if job.error_code && !inGroup}
                 <tr class="row-error" data-status={job.status}>
                   <td colspan="9" class="cell-row-error">
                     <span class="error-inline">error: {job.error_code}{retryIn(job.next_retry_at) || (job.error ? ` · ${job.error}` : '')}</span>

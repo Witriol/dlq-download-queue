@@ -1386,6 +1386,89 @@ func TestRunnerWaitsForNonRetryableFailedMultipartSiblingBeforeArchiveDecrypt(t 
 	}
 }
 
+func TestRunnerWaitsForQueuedWebshareMultipartSiblingAfterRequeue(t *testing.T) {
+	store := newRunnerStore(t)
+	ctx := context.Background()
+	outDir := t.TempDir()
+	part1Path := filepath.Join(outDir, "show.part1.rar")
+	part2Path := filepath.Join(outDir, "show.part2.rar")
+	if err := os.WriteFile(part1Path, []byte("part1"), 0o644); err != nil {
+		t.Fatalf("write part1: %v", err)
+	}
+	if err := os.WriteFile(part2Path, []byte("part2"), 0o644); err != nil {
+		t.Fatalf("write part2: %v", err)
+	}
+
+	part1ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://webshare.cz/#/file/abcde/show-part1-rar",
+		OutDir:      outDir,
+		Site:        "webshare",
+		MaxAttempts: 3,
+	})
+	if err != nil {
+		t.Fatalf("create part1 job: %v", err)
+	}
+	part2ID, err := store.CreateJob(ctx, &Job{
+		URL:         "https://webshare.cz/#/file/fghij/show-part2-rar",
+		OutDir:      outDir,
+		Site:        "webshare",
+		MaxAttempts: 3,
+	})
+	if err != nil {
+		t.Fatalf("create part2 job: %v", err)
+	}
+
+	if err := store.UpdateResolving(ctx, part1ID, "https://download.local/part1", "show.part1.rar", 111); err != nil {
+		t.Fatalf("update resolving part1: %v", err)
+	}
+	if err := store.UpdateResolving(ctx, part2ID, "https://download.local/part2", "show.part2.rar", 222); err != nil {
+		t.Fatalf("update resolving part2: %v", err)
+	}
+	if err := store.MarkFailed(ctx, part1ID, "resolve_failed", "resolver timeout", time.Now().UTC().Add(30*time.Minute)); err != nil {
+		t.Fatalf("mark failed part1: %v", err)
+	}
+	if err := store.Requeue(ctx, part1ID); err != nil {
+		t.Fatalf("requeue part1: %v", err)
+	}
+	if err := store.MarkDownloading(ctx, part2ID, "aria2", "gid-part2"); err != nil {
+		t.Fatalf("mark downloading part2: %v", err)
+	}
+
+	fakeDec := &fakeArchiveDecryptor{attempted: true}
+	runner := &Runner{
+		Store:            store,
+		ArchiveDecryptor: fakeDec,
+		GetAutoDecrypt:   func() bool { return true },
+	}
+
+	part2Job, err := store.GetJob(ctx, part2ID)
+	if err != nil {
+		t.Fatalf("get part2 job: %v", err)
+	}
+	handled := runner.queueDecryptFromStatus(ctx, *part2Job, &downloader.Status{
+		Files: []struct {
+			Path string `json:"path"`
+		}{
+			{Path: part2Path},
+		},
+	}, 222)
+	if !handled {
+		t.Fatalf("expected queueDecryptFromStatus to handle multipart webshare job")
+	}
+	time.Sleep(50 * time.Millisecond)
+	called, _, _, _ := fakeDec.snapshot()
+	if called {
+		t.Fatalf("did not expect decryptor call while requeued sibling is still queued")
+	}
+	events, err := store.ListEvents(ctx, part2ID, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if !eventsContain(events, "archive decrypt waiting: multipart set still downloading") {
+		t.Fatalf("expected wait event, got: %v", events)
+	}
+}
+
 func TestRunnerIgnoresSupersededFailedMultipartSiblingBeforeArchiveDecrypt(t *testing.T) {
 	store := newRunnerStore(t)
 	ctx := context.Background()

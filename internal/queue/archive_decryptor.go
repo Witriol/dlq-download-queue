@@ -1,9 +1,11 @@
 package queue
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +22,11 @@ type commandArchiveDecryptor struct {
 	command string
 }
 
+var (
+	rarV4Signature = []byte{'R', 'a', 'r', '!', 0x1a, 0x07, 0x00}
+	rarV5Signature = []byte{'R', 'a', 'r', '!', 0x1a, 0x07, 0x01, 0x00}
+)
+
 func NewArchiveDecryptor() ArchiveDecryptor {
 	return &commandArchiveDecryptor{
 		command: "7zz",
@@ -33,6 +40,9 @@ func (d *commandArchiveDecryptor) MaybeDecrypt(ctx context.Context, archivePath,
 	resolvedArchivePath := resolveArchiveEntryPath(archivePath)
 	if !isArchiveFile(resolvedArchivePath) {
 		return false, nil
+	}
+	if err := validateArchiveInput(resolvedArchivePath, overridePassword); err != nil {
+		return true, err
 	}
 	command := strings.TrimSpace(d.command)
 	if command == "" {
@@ -84,6 +94,107 @@ func isArchiveFile(path string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func validateArchiveInput(path string, password string) error {
+	name := strings.ToLower(filepath.Base(strings.TrimSpace(path)))
+	if !strings.HasSuffix(name, ".rar") {
+		return nil
+	}
+	ok, err := hasRARSignature(path)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("missing RAR4/RAR5 signature")
+	}
+	if strings.TrimSpace(password) == "" {
+		encrypted, _ := hasRARHeaderEncryption(path)
+		if encrypted {
+			return errors.New("archive has header encryption, a password is required")
+		}
+	}
+	return nil
+}
+
+func hasRARSignature(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	header := make([]byte, len(rarV5Signature))
+	n, err := io.ReadFull(f, header)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	header = header[:n]
+	if len(header) >= len(rarV4Signature) && bytes.Equal(header[:len(rarV4Signature)], rarV4Signature) {
+		return true, nil
+	}
+	if len(header) >= len(rarV5Signature) && bytes.Equal(header[:len(rarV5Signature)], rarV5Signature) {
+		return true, nil
+	}
+	return false, nil
+}
+
+// hasRARHeaderEncryption returns true if the RAR5 archive has header encryption enabled.
+// In RAR5 the first block after the 8-byte signature is structured as:
+// CRC32 (4 bytes) | header-size vint | header-type vint | ...
+// Header type 1 is the Archive Encryption Header, meaning all headers are encrypted.
+func hasRARHeaderEncryption(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	// Skip RAR5 signature (8 bytes) + header CRC32 (4 bytes).
+	if _, err := f.Seek(12, io.SeekStart); err != nil {
+		return false, nil
+	}
+	// Skip header size vint.
+	if err := skipRAR5Vint(f); err != nil {
+		return false, nil
+	}
+	// Read header type vint; value 1 = archive encryption header.
+	headerType, err := readRAR5Vint(f)
+	if err != nil {
+		return false, nil
+	}
+	return headerType == 1, nil
+}
+
+func skipRAR5Vint(r io.Reader) error {
+	b := make([]byte, 1)
+	for {
+		if _, err := io.ReadFull(r, b); err != nil {
+			return err
+		}
+		if b[0]&0x80 == 0 {
+			return nil
+		}
+	}
+}
+
+func readRAR5Vint(r io.Reader) (uint64, error) {
+	var result uint64
+	var shift uint
+	b := make([]byte, 1)
+	for {
+		if _, err := io.ReadFull(r, b); err != nil {
+			return 0, err
+		}
+		result |= uint64(b[0]&0x7f) << shift
+		if b[0]&0x80 == 0 {
+			return result, nil
+		}
+		shift += 7
+		if shift >= 64 {
+			return 0, errors.New("vint overflow")
+		}
 	}
 }
 

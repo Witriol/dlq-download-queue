@@ -66,8 +66,14 @@ func TestStoreRequeueClearsFields(t *testing.T) {
 	if updated.EngineGID.Valid {
 		t.Fatalf("expected engine_gid to be cleared")
 	}
-	if updated.ResolvedURL.Valid || updated.Filename.Valid || updated.SizeBytes.Valid {
-		t.Fatalf("expected resolved fields to be cleared")
+	if updated.ResolvedURL.Valid {
+		t.Fatalf("expected resolved_url to be cleared")
+	}
+	if !updated.Filename.Valid || updated.Filename.String != "file.bin" {
+		t.Fatalf("expected filename to persist across requeue, got %+v", updated.Filename)
+	}
+	if updated.SizeBytes.Valid {
+		t.Fatalf("expected size_bytes to be cleared")
 	}
 	if updated.BytesDone != 0 {
 		t.Fatalf("expected bytes_done to be reset, got %d", updated.BytesDone)

@@ -411,9 +411,8 @@ func (r *Runner) runDecrypt(ctx context.Context, task decryptTask) {
 			_ = r.Store.AddEvent(ctx, task.jobID, "info", "archive decrypt started: "+filepath.Base(task.archivePath))
 			attempted, err := r.ArchiveDecryptor.MaybeDecrypt(ctx, task.archivePath, task.outDir, task.password)
 			if err != nil {
-				eventMsg := "archive decrypt failed: " + err.Error()
-				_ = r.Store.AddEvent(ctx, task.jobID, "error", eventMsg)
-				if markErr := r.Store.MarkPostprocessFailed(ctx, task.jobID, "archive decrypt failed", "archive_decrypt_failed"); markErr != nil {
+				_ = r.Store.AddEvent(ctx, task.jobID, "error", "archive decrypt failed: "+err.Error())
+				if markErr := r.Store.MarkPostprocessFailed(ctx, task.jobID, err.Error(), "archive_decrypt_failed"); markErr != nil {
 					log.Printf("runner mark archive decrypt failed error for job %d: %v", task.jobID, markErr)
 				}
 				_ = r.Store.ClearArchivePassword(ctx, task.jobID)

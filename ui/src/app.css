@@ -623,6 +623,12 @@ textarea {
   white-space: nowrap;
 }
 
+.group-decrypt-error {
+  font-size: 11px;
+  color: #fca5a5;
+  opacity: 0.85;
+}
+
 .group-status {
   display: inline-flex;
   align-items: center;
