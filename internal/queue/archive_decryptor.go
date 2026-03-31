@@ -151,20 +151,30 @@ func hasRARHeaderEncryption(path string) (bool, error) {
 	}
 	defer f.Close()
 
-	// Skip RAR5 signature (8 bytes) + header CRC32 (4 bytes).
-	if _, err := f.Seek(12, io.SeekStart); err != nil {
+	// Only RAR5 has the archive encryption header block; verify signature first.
+	sig := make([]byte, len(rarV5Signature))
+	if _, err := io.ReadFull(f, sig); err != nil {
+		return false, nil
+	}
+	if !bytes.Equal(sig, rarV5Signature) {
+		return false, nil
+	}
+
+	// Skip header CRC32 (4 bytes) that follows the 8-byte RAR5 signature.
+	if _, err := f.Seek(int64(len(rarV5Signature)+4), io.SeekStart); err != nil {
 		return false, nil
 	}
 	// Skip header size vint.
 	if err := skipRAR5Vint(f); err != nil {
 		return false, nil
 	}
-	// Read header type vint; value 1 = archive encryption header.
+	// Read header type vint; value 4 = archive encryption header.
+	// (1=main archive, 2=file, 3=service, 4=encryption, 5=end of archive)
 	headerType, err := readRAR5Vint(f)
 	if err != nil {
 		return false, nil
 	}
-	return headerType == 1, nil
+	return headerType == 4, nil
 }
 
 func skipRAR5Vint(r io.Reader) error {

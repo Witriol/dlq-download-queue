@@ -174,7 +174,7 @@ func TestMaybeDecryptRejectsHeaderEncryptedRARWithoutPassword(t *testing.T) {
 	copy(data, rarV5Signature)           // bytes 0-7: RAR5 signature
 	data[8], data[9], data[10], data[11] = 0x01, 0x02, 0x03, 0x04 // fake CRC32
 	data[12] = 0x08                      // header size vint (single byte, value=8)
-	data[13] = 0x01                      // header type vint = 1 (archive encryption header)
+	data[13] = 0x04                      // header type vint = 4 (archive encryption header)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestHasRARHeaderEncryption(t *testing.T) {
 	copy(enc, rarV5Signature)
 	enc[8], enc[9], enc[10], enc[11] = 0xAA, 0xBB, 0xCC, 0xDD
 	enc[12] = 0x08 // header size vint
-	enc[13] = 0x01 // type = archive encryption
+	enc[13] = 0x04 // type = archive encryption
 	if err := os.WriteFile(encPath, enc, 0o644); err != nil {
 		t.Fatalf("write enc: %v", err)
 	}
@@ -246,6 +246,30 @@ func TestHasRARHeaderEncryption(t *testing.T) {
 	}
 	if got, err := hasRARHeaderEncryption(plainPath); err != nil || got {
 		t.Fatalf("hasRARHeaderEncryption(plain) = %v, %v; want false, nil", got, err)
+	}
+}
+
+func TestHasRARHeaderEncryptionRAR4NotFalsePositive(t *testing.T) {
+	// RAR4 files must not be falsely detected as header-encrypted.
+	// Before the fix, hasRARHeaderEncryption assumed RAR5 layout and read
+	// garbage bytes from a RAR4 file, which could coincidentally equal 1.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "v4.rar")
+	data := make([]byte, 32)
+	copy(data, rarV4Signature)
+	// Fill bytes after the 7-byte RAR4 signature with values that would trick
+	// a naive parser into seeing a RAR5 encryption header (type 0x04).
+	data[12] = 0x08
+	data[13] = 0x04
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got, err := hasRARHeaderEncryption(path)
+	if err != nil {
+		t.Fatalf("hasRARHeaderEncryption(rar4): %v", err)
+	}
+	if got {
+		t.Fatalf("hasRARHeaderEncryption(rar4) = true; RAR4 must not be flagged as header-encrypted")
 	}
 }
 
