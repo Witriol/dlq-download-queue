@@ -11,6 +11,7 @@
   import BrowserModal from '$lib/components/BrowserModal.svelte';
 
   const statusOptions = ['', 'queued', 'resolving', 'downloading', 'paused', 'decrypting', 'completed', 'failed', 'decrypt_failed', 'deleted'];
+  const outDirFavoritesStorageKey = 'dlq.outDirFavorites';
 
   let jobs = [];
   let lastError = '';
@@ -33,6 +34,7 @@
   let adding = false;
   let addError = '';
   let outDirPresets = [];
+  let outDirFavorites = [];
   let metaError = '';
   let metaVersion = '';
   let outDirPlaceholder = 'Select a preset or type a path';
@@ -310,6 +312,42 @@
     loadSettings();
   }
 
+  function normalizeOutDirPath(path) {
+    const trimmed = String(path ?? '').trim();
+    if (!trimmed || trimmed === '/') return trimmed;
+    return trimmed.replace(/\/+$/, '');
+  }
+
+  function loadOutDirFavorites() {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      const stored = JSON.parse(localStorage.getItem(outDirFavoritesStorageKey) || '[]');
+      outDirFavorites = Array.isArray(stored)
+        ? [...new Set(stored.map(normalizeOutDirPath).filter(Boolean))]
+        : [];
+    } catch {
+      outDirFavorites = [];
+    }
+  }
+
+  function saveOutDirFavorites() {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(outDirFavoritesStorageKey, JSON.stringify(outDirFavorites));
+  }
+
+  function addOutDirFavorite(path) {
+    const favorite = normalizeOutDirPath(path);
+    if (!favorite || outDirFavorites.includes(favorite)) return;
+    outDirFavorites = [favorite, ...outDirFavorites].slice(0, 20);
+    saveOutDirFavorites();
+  }
+
+  function removeOutDirFavorite(path) {
+    const favorite = normalizeOutDirPath(path);
+    outDirFavorites = outDirFavorites.filter((item) => item !== favorite);
+    saveOutDirFavorites();
+  }
+
   async function loadBrowser(path = '') {
     browserLoading = true;
     browserError = '';
@@ -360,7 +398,7 @@
   $: parsedUrls = parseUrls(addUrlsText);
   $: sortedJobs = sortJobs(jobs, sortKey, sortDir);
   $: addErrors = addResults.filter((result) => !result.ok);
-  $: outDirPlaceholder = outDirPresets.length > 0 ? outDirPresets[0] : 'Select a preset or type a path';
+  $: outDirPlaceholder = outDirFavorites[0] ?? outDirPresets[0] ?? 'Select a preset or type a path';
 
   $: {
     logsAutoRefresh;
@@ -375,6 +413,7 @@
   onMount(() => {
     refresh();
     loadMeta();
+    loadOutDirFavorites();
     return () => {
       stopTimer();
       stopLogsTimer();
@@ -465,6 +504,7 @@
   bind:addArchivePassword
   {outDirPlaceholder}
   {outDirPresets}
+  {outDirFavorites}
   parsedUrlCount={parsedUrls.length}
   {adding}
   {addError}
@@ -472,6 +512,7 @@
   {addErrors}
   onClose={() => (showAdd = false)}
   onOpenBrowser={openBrowser}
+  onRemoveFavorite={removeOutDirFavorite}
   onHandleFiles={handleFiles}
   onClearUrls={() => (addUrlsText = '')}
   onSubmit={handleAdd}
@@ -515,9 +556,11 @@
   {browserIsRoot}
   {browserError}
   {browserLoading}
+  browserFavoritePaths={outDirFavorites}
   bind:browserNewFolderName
   onClose={() => (showBrowser = false)}
   onLoadBrowser={loadBrowser}
   onCreateFolder={createFolder}
   onSelectPath={selectBrowserPath}
+  onAddFavorite={addOutDirFavorite}
 />

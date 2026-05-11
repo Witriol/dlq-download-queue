@@ -4,6 +4,7 @@
 *.swo
 *~
 todo.md
+agents.md
 
 # UI
 ui/node_modules/

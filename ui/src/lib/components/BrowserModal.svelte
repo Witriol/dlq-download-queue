@@ -1,4 +1,6 @@
 <script>
+  import { tick } from 'svelte';
+
   export let show = false;
   export let browserPath = '';
   export let browserDirs = [];
@@ -7,19 +9,23 @@
   export let browserError = '';
   export let browserLoading = false;
   export let browserNewFolderName = '';
+  export let browserFavoritePaths = [];
 
   export let onClose = () => {};
   export let onLoadBrowser = () => {};
   export let onCreateFolder = () => {};
   export let onSelectPath = () => {};
+  export let onAddFavorite = () => {};
 
   let browserSearch = '';
   let previousBrowserPath = '';
   let showSearch = false;
   let showNewFolder = false;
   let newFolderName = '';
+  let searchInput;
+  let searchFocusPending = false;
 
-  $: browserSearchQuery = browserSearch.trim().toLowerCase();
+  $: browserSearchQuery = showSearch ? browserSearch.trim().toLowerCase() : '';
   $: filteredBrowserDirs = browserSearchQuery
     ? browserDirs.filter((dir) => dir.toLowerCase().includes(browserSearchQuery))
     : browserDirs;
@@ -28,6 +34,7 @@
     showSearch = false;
     showNewFolder = false;
     newFolderName = '';
+    searchFocusPending = false;
     previousBrowserPath = browserPath;
   }
 
@@ -52,6 +59,29 @@
     showNewFolder = false;
   }
 
+  async function toggleSearch() {
+    showSearch = !showSearch;
+    if (!showSearch) {
+      browserSearch = '';
+      searchFocusPending = false;
+      return;
+    }
+    searchFocusPending = true;
+    await tick();
+    focusSearchInput();
+  }
+
+  function focusSearchInput() {
+    if (!searchInput || browserLoading) return;
+    searchInput.focus();
+    searchInput.select();
+    searchFocusPending = false;
+  }
+
+  $: if (searchFocusPending && showSearch && !browserLoading) {
+    tick().then(focusSearchInput);
+  }
+
   function focusFirst(node) {
     const el = node.querySelector('textarea, input, button:not(.close-btn)');
     el?.focus();
@@ -62,7 +92,7 @@
 
 {#if show}
   <div
-    class="modal-backdrop"
+    class="modal-backdrop browser-backdrop"
     role="button"
     tabindex="0"
     aria-label="Close dialog"
@@ -99,7 +129,7 @@
                 </svg>
               </button>
             {/if}
-            <button class="btn icon-btn ghost tiny" title="Search folders" on:click={() => { showSearch = !showSearch; }}>
+            <button class="btn icon-btn ghost tiny" title="Search folders" aria-pressed={showSearch} on:click={toggleSearch}>
               <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16">
                 <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" fill="none"/>
                 <path d="M16.5 16.5 21 21" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
@@ -121,7 +151,8 @@
               type="text"
               placeholder="Search folders..."
               bind:value={browserSearch}
-              disabled={browserLoading || browserDirs.length === 0}
+              bind:this={searchInput}
+              disabled={browserLoading}
             />
             {#if browserSearchQuery}
               <p class="small browser-search-meta">Showing {filteredBrowserDirs.length} of {browserDirs.length} folders</p>
@@ -159,16 +190,26 @@
             <div class="result-item">No matching folders in this directory</div>
           {:else}
             {#each filteredBrowserDirs as dir}
+              {@const dirPath = nextPath(dir)}
+              {@const isFavorite = browserFavoritePaths.includes(dirPath)}
               <div class="result-item browser-dir-item">
-                <button class="btn ghost browser-dir-btn" on:click={() => onLoadBrowser(nextPath(dir))}>
+                <button class="btn ghost browser-dir-btn" on:click={() => onLoadBrowser(dirPath)}>
                   <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" style="flex-shrink:0">
                     <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.17a2 2 0 0 1-1.41-.59l-.83-.82A2 2 0 0 0 9.17 4H4a2 2 0 0 0-2 2v12c0 1.1.9 2 2 2z" stroke="currentColor" stroke-width="1.8" fill="none"/>
                   </svg>
                   {dir}
                 </button>
-                <button class="btn icon-btn ghost tiny browser-dir-use" title="Use this folder" on:click={() => onSelectPath(nextPath(dir))}>
+                <button
+                  class="btn icon-btn ghost tiny browser-dir-favorite"
+                  class:is-favorite={isFavorite}
+                  type="button"
+                  title={isFavorite ? 'Already in favorites' : 'Add to favorites'}
+                  aria-label={isFavorite ? `Favorite folder ${dirPath}` : `Add ${dirPath} to favorites`}
+                  aria-pressed={isFavorite}
+                  on:click={() => onAddFavorite(dirPath)}
+                >
                   <svg viewBox="0 0 24 24" aria-hidden="true" width="14" height="14">
-                    <path d="M5 13l4 4L19 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                    <path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3l-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" fill={isFavorite ? 'currentColor' : 'none'} />
                   </svg>
                 </button>
               </div>

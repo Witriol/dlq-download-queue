@@ -5,6 +5,7 @@
   export let addArchivePassword = '';
   export let outDirPlaceholder = 'Select a preset or type a path';
   export let outDirPresets = [];
+  export let outDirFavorites = [];
   export let parsedUrlCount = 0;
   export let adding = false;
   export let addError = '';
@@ -13,6 +14,7 @@
 
   export let onClose = () => {};
   export let onOpenBrowser = () => {};
+  export let onRemoveFavorite = () => {};
   export let onHandleFiles = () => {};
   export let onClearUrls = () => {};
   export let onSubmit = () => {};
@@ -51,6 +53,28 @@
       </div>
       <div class="form-field">
         <label for="add-out-dir">Out Directory</label>
+        {#if outDirFavorites.length > 0}
+          <div class="presets-row favorite-folders-row">
+            <span class="presets-label">Favorites</span>
+            <div class="presets-list favorite-folders-list">
+              {#each outDirFavorites as favorite}
+                <div class:active={addOutDir === favorite} class="favorite-folder-chip">
+                  <button class="favorite-folder-btn" type="button" title={favorite} on:click={() => (addOutDir = favorite)}>
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3l-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" fill="currentColor" />
+                    </svg>
+                    <span>{favorite}</span>
+                  </button>
+                  <button class="favorite-remove-btn" type="button" title="Remove favorite" aria-label={`Remove favorite ${favorite}`} on:click={() => onRemoveFavorite(favorite)}>
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="m7 7 10 10M17 7 7 17" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" fill="none" />
+                    </svg>
+                  </button>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
         {#if outDirPresets.length > 0}
           <div class="presets-row">
             <span class="presets-label">Presets</span>
