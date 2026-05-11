@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.6 - 2026-05-11
+
+- Added Add Jobs folder favorites: Browse now stars folders into a persisted favorites row so users can pick common output folders directly from Add Jobs.
+- Improved MEGA link handling for duplicate-pasted and padded links, plus clearer token/key error messaging.
+- Detected RAR5 header-encrypted archives earlier, surfaced decrypt failures in grouped UI rows, and added coverage for the failure path.
+- Corrected RAR5 encryption detection to verify the RAR5 signature first and check the encryption block type.
+- Updated Docker/Unraid build flow to use the native arm64 build stage.
+
 ## 0.2.5 - 2026-03-05
 
 - Added multipart archive grouping across API/UI, including job group metadata and group actions (`retry decrypt`, `remove`) via dedicated group endpoints.
