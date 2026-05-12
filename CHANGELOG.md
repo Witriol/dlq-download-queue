@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.7 - 2026-05-12
+
+- Switched archive extraction to a single `7z` command path using Debian `7zip-rar` from `non-free` for RAR/RAR5 support.
+- Removed the `unar` fallback and added two-pass `7z` extraction for tar-compressed archives so `.tar.gz`, `.tar.bz2`, and `.tar.xz` contents are unpacked directly.
+- Updated the Docker image package sources to use bookworm backports/non-free for the RAR-capable 7-Zip runtime.
+
 ## 0.2.6 - 2026-05-11
 
 - Added Add Jobs folder favorites: Browse now stars folders into a persisted favorites row so users can pick common output folders directly from Add Jobs.

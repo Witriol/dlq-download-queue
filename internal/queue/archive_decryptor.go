@@ -29,7 +29,7 @@ var (
 
 func NewArchiveDecryptor() ArchiveDecryptor {
 	return &commandArchiveDecryptor{
-		command: "7zz",
+		command: "7z",
 	}
 }
 
@@ -46,28 +46,12 @@ func (d *commandArchiveDecryptor) MaybeDecrypt(ctx context.Context, archivePath,
 	}
 	command := strings.TrimSpace(d.command)
 	if command == "" {
-		command = "7zz"
+		command = "7z"
 	}
 	password := strings.TrimSpace(overridePassword)
 	out, err := runArchiveTool(ctx, command, resolvedArchivePath, outDir, password)
 	if err == nil {
 		return true, nil
-	}
-	if shouldTryUnarFallback(command, resolvedArchivePath, out, err) {
-		if _, lookErr := exec.LookPath("unar"); lookErr == nil {
-			fallbackOut, fallbackErr := runArchiveTool(ctx, "unar", resolvedArchivePath, outDir, password)
-			if fallbackErr == nil {
-				return true, nil
-			}
-			if fallbackOut == "" {
-				fallbackOut = fallbackErr.Error()
-			}
-			if out != "" {
-				out = out + "\n--- unar fallback failed ---\n" + fallbackOut
-			} else {
-				out = fallbackOut
-			}
-		}
 	}
 	if out == "" {
 		out = err.Error()
@@ -143,7 +127,7 @@ func hasRARSignature(path string) (bool, error) {
 // hasRARHeaderEncryption returns true if the RAR5 archive has header encryption enabled.
 // In RAR5 the first block after the 8-byte signature is structured as:
 // CRC32 (4 bytes) | header-size vint | header-type vint | ...
-// Header type 1 is the Archive Encryption Header, meaning all headers are encrypted.
+// Header type 4 is the Archive Encryption Header, meaning all headers are encrypted.
 func hasRARHeaderEncryption(path string) (bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -209,6 +193,9 @@ func readRAR5Vint(r io.Reader) (uint64, error) {
 }
 
 func runArchiveTool(ctx context.Context, command, archivePath, outDir, password string) (string, error) {
+	if isTarCompressedArchive(archivePath) {
+		return runTarCompressedArchiveTool(ctx, command, archivePath, outDir, password)
+	}
 	args := archiveCommandArgs(command, archivePath, outDir, password)
 	cmd := exec.CommandContext(ctx, command, args...)
 	out, err := cmd.CombinedOutput()
@@ -216,71 +203,96 @@ func runArchiveTool(ctx context.Context, command, archivePath, outDir, password 
 }
 
 func archiveCommandArgs(command, archivePath, outDir, password string) []string {
-	switch archiveToolKind(command) {
-	case "unar":
-		args := []string{
-			"-f", // overwrite without prompt
-			"-o", outDir,
-		}
-		if strings.TrimSpace(password) != "" {
-			args = append(args, "-p", password)
-		}
-		args = append(args, archivePath)
-		return args
-	default:
-		args := []string{
-			"x",    // extract with full paths
-			"-y",   // assume yes on all prompts
-			"-aoa", // overwrite all existing files
-			"-o" + outDir,
-		}
-		if strings.TrimSpace(password) != "" {
-			args = append(args, "-p"+password)
-		}
-		args = append(args, archivePath)
-		return args
+	args := []string{
+		"x",    // extract with full paths
+		"-y",   // assume yes on all prompts
+		"-aoa", // overwrite all existing files
+		"-o" + outDir,
+	}
+	if strings.TrimSpace(password) != "" {
+		args = append(args, "-p"+password)
+	}
+	args = append(args, archivePath)
+	return args
+}
+
+func archiveStreamCommandArgs(archivePath, password string) []string {
+	args := []string{"x", "-so"}
+	if strings.TrimSpace(password) != "" {
+		args = append(args, "-p"+password)
+	}
+	args = append(args, archivePath)
+	return args
+}
+
+func archiveStreamTarCommandArgs(outDir string) []string {
+	return []string{
+		"x",
+		"-y",
+		"-aoa",
+		"-si",
+		"-ttar",
+		"-o" + outDir,
 	}
 }
 
-func archiveToolKind(command string) string {
-	base := strings.ToLower(filepath.Base(strings.TrimSpace(command)))
-	switch base {
-	case "unar":
-		return "unar"
-	case "7z", "7zz":
-		return "7z"
-	default:
-		// Keep compatibility with custom 7z-compatible commands.
-		return "7z"
+func runTarCompressedArchiveTool(ctx context.Context, command, archivePath, outDir, password string) (string, error) {
+	source := exec.CommandContext(ctx, command, archiveStreamCommandArgs(archivePath, password)...)
+	extract := exec.CommandContext(ctx, command, archiveStreamTarCommandArgs(outDir)...)
+
+	pipeReader, pipeWriter := io.Pipe()
+	var sourceErr bytes.Buffer
+	var extractOut bytes.Buffer
+	source.Stdout = pipeWriter
+	source.Stderr = &sourceErr
+	extract.Stdin = pipeReader
+	extract.Stdout = &extractOut
+	extract.Stderr = &extractOut
+
+	if err := extract.Start(); err != nil {
+		_ = pipeReader.Close()
+		_ = pipeWriter.Close()
+		return strings.TrimSpace(joinArchiveOutput(sourceErr.String(), extractOut.String())), err
 	}
+	sourceDone := make(chan error, 1)
+	go func() {
+		err := source.Run()
+		_ = pipeWriter.CloseWithError(err)
+		sourceDone <- err
+	}()
+
+	extractWaitErr := extract.Wait()
+	_ = pipeReader.Close()
+	sourceWaitErr := <-sourceDone
+	out := strings.TrimSpace(joinArchiveOutput(sourceErr.String(), extractOut.String()))
+	if sourceWaitErr != nil {
+		return out, sourceWaitErr
+	}
+	if extractWaitErr != nil {
+		return out, extractWaitErr
+	}
+	return out, nil
 }
 
-func shouldTryUnarFallback(command, archivePath, output string, runErr error) bool {
-	if archiveToolKind(command) == "unar" {
-		return false
+func joinArchiveOutput(parts ...string) string {
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
 	}
-	if isCommandNotFound(runErr) {
-		return true
-	}
-	name := strings.ToLower(strings.TrimSpace(archivePath))
-	if !strings.HasSuffix(name, ".rar") {
-		return false
-	}
-	lower := strings.ToLower(output)
-	return strings.Contains(lower, "cannot open the file as archive") ||
-		strings.Contains(lower, "can't open as archive") ||
-		strings.Contains(lower, "unsupported method")
+	return strings.Join(out, "\n")
 }
 
-func isCommandNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	var execErr *exec.Error
-	if errors.As(err, &execErr) {
-		return errors.Is(execErr.Err, exec.ErrNotFound)
-	}
-	return false
+func isTarCompressedArchive(path string) bool {
+	name := strings.ToLower(filepath.Base(strings.TrimSpace(path)))
+	return strings.HasSuffix(name, ".tar.gz") ||
+		strings.HasSuffix(name, ".tgz") ||
+		strings.HasSuffix(name, ".tar.bz2") ||
+		strings.HasSuffix(name, ".tbz2") ||
+		strings.HasSuffix(name, ".tar.xz") ||
+		strings.HasSuffix(name, ".txz")
 }
 
 func resolveArchiveEntryPath(archivePath string) string {

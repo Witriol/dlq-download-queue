@@ -38,8 +38,8 @@ func TestMaybeDecryptRejectsRARWithoutSignature(t *testing.T) {
 	}
 }
 
-func TestArchiveCommandArgs7zz(t *testing.T) {
-	args := archiveCommandArgs("7zz", "/data/a.rar", "/out dir", "pw")
+func TestArchiveCommandArgs7z(t *testing.T) {
+	args := archiveCommandArgs("7z", "/data/a.rar", "/out dir", "pw")
 	want := []string{"x", "-y", "-aoa", "-o/out dir", "-ppw", "/data/a.rar"}
 	if len(args) != len(want) {
 		t.Fatalf("args len = %d, want %d (%v)", len(args), len(want), args)
@@ -51,28 +51,27 @@ func TestArchiveCommandArgs7zz(t *testing.T) {
 	}
 }
 
-func TestArchiveCommandArgsUnar(t *testing.T) {
-	args := archiveCommandArgs("unar", "/data/a.rar", "/out dir", "pw")
-	want := []string{"-f", "-o", "/out dir", "-p", "pw", "/data/a.rar"}
+func TestArchiveStreamCommandArgs(t *testing.T) {
+	args := archiveStreamCommandArgs("/data/a.tar.gz", "pw")
+	want := []string{"x", "-so", "-ppw", "/data/a.tar.gz"}
 	if len(args) != len(want) {
 		t.Fatalf("args len = %d, want %d (%v)", len(args), len(want), args)
 	}
 	for i := range want {
 		if args[i] != want[i] {
-			t.Fatalf("args[%d] = %q, want %q (all=%v)", i, args[i], want[i], args)
+			t.Fatalf("stream args[%d] = %q, want %q (all=%v)", i, args[i], want[i], args)
 		}
 	}
-}
 
-func TestShouldTryUnarFallback(t *testing.T) {
-	if !shouldTryUnarFallback("7zz", "/data/a.rar", "Cannot open the file as archive", nil) {
-		t.Fatalf("expected fallback for rar open-as-archive error")
+	tarArgs := archiveStreamTarCommandArgs("/out dir")
+	tarWant := []string{"x", "-y", "-aoa", "-si", "-ttar", "-o/out dir"}
+	if len(tarArgs) != len(tarWant) {
+		t.Fatalf("tar args len = %d, want %d (%v)", len(tarArgs), len(tarWant), tarArgs)
 	}
-	if shouldTryUnarFallback("unar", "/data/a.rar", "Cannot open the file as archive", nil) {
-		t.Fatalf("did not expect fallback when unar is already primary")
-	}
-	if shouldTryUnarFallback("7zz", "/data/a.zip", "Cannot open the file as archive", nil) {
-		t.Fatalf("did not expect fallback for non-rar extension")
+	for i := range tarWant {
+		if tarArgs[i] != tarWant[i] {
+			t.Fatalf("tar args[%d] = %q, want %q (all=%v)", i, tarArgs[i], tarWant[i], tarArgs)
+		}
 	}
 }
 
@@ -91,6 +90,28 @@ func TestIsArchiveFile(t *testing.T) {
 	for _, tc := range cases {
 		if got := isArchiveFile(tc.in); got != tc.want {
 			t.Fatalf("isArchiveFile(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestIsTarCompressedArchive(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"/data/a.tar.gz", true},
+		{"/data/a.tgz", true},
+		{"/data/a.tar.bz2", true},
+		{"/data/a.tbz2", true},
+		{"/data/a.tar.xz", true},
+		{"/data/a.txz", true},
+		{"/data/a.tar", false},
+		{"/data/a.gz", false},
+		{"/data/a.zip", false},
+	}
+	for _, tc := range cases {
+		if got := isTarCompressedArchive(tc.in); got != tc.want {
+			t.Fatalf("isTarCompressedArchive(%q) = %v, want %v", tc.in, got, tc.want)
 		}
 	}
 }
@@ -166,15 +187,15 @@ func TestMultipartArchiveGroupKey(t *testing.T) {
 }
 
 func TestMaybeDecryptRejectsHeaderEncryptedRARWithoutPassword(t *testing.T) {
-	// Construct a minimal RAR5 file with an Archive Encryption Header (type 1).
-	// Layout: RAR5 signature (8) + fake CRC32 (4) + header-size vint (1) + header-type vint (1=encrypt) + padding.
+	// Construct a minimal RAR5 file with an Archive Encryption Header (type 4).
+	// Layout: RAR5 signature (8) + fake CRC32 (4) + header-size vint (1) + header-type vint (4=encrypt) + padding.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "encrypted.rar")
 	data := make([]byte, 32)
-	copy(data, rarV5Signature)           // bytes 0-7: RAR5 signature
+	copy(data, rarV5Signature)                                    // bytes 0-7: RAR5 signature
 	data[8], data[9], data[10], data[11] = 0x01, 0x02, 0x03, 0x04 // fake CRC32
-	data[12] = 0x08                      // header size vint (single byte, value=8)
-	data[13] = 0x04                      // header type vint = 4 (archive encryption header)
+	data[12] = 0x08                                               // header size vint (single byte, value=8)
+	data[13] = 0x04                                               // header type vint = 4 (archive encryption header)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -201,7 +222,7 @@ func TestMaybeDecryptAllowsHeaderEncryptedRARWithPassword(t *testing.T) {
 	copy(data, rarV5Signature)
 	data[8], data[9], data[10], data[11] = 0x01, 0x02, 0x03, 0x04
 	data[12] = 0x08
-	data[13] = 0x01
+	data[13] = 0x04
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -220,7 +241,7 @@ func TestMaybeDecryptAllowsHeaderEncryptedRARWithPassword(t *testing.T) {
 func TestHasRARHeaderEncryption(t *testing.T) {
 	dir := t.TempDir()
 
-	// Encrypted: RAR5 sig + CRC32 + size vint + type vint 0x01
+	// Encrypted: RAR5 sig + CRC32 + size vint + type vint 0x04
 	encPath := filepath.Join(dir, "enc.rar")
 	enc := make([]byte, 32)
 	copy(enc, rarV5Signature)

@@ -203,7 +203,8 @@ DLQ is designed for **trusted networks** (home LAN, Docker internal networking).
 - MEGA resolver supports public file links (`mega.nz/file/...`) by resolving temporary download URLs and decrypting MEGA file payloads after download.
 - Auto decrypt/extract runs after successful download for archive extensions (`.zip`, `.rar`, `.7z`, `.tar*`, `.gz`, `.bz2`, `.xz`) when `auto_decrypt=true` in settings.
 - Pass `--archive-password` in `dlq add` (or `archive_password` in API/UI) for password-protected archives in that add batch.
-- DLQ tries `7zz` first; if needed (unsupported/open-as-archive RAR errors, or missing `7zz` binary) it automatically retries with `unar`.
+- DLQ extracts archives with `7z`. The Docker image includes Debian's `7zip-rar` plugin from `non-free` so RAR/RAR5 archives are handled by the same extractor.
+- Tar-compressed archives (`.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, `.txz`) are unpacked through a two-pass `7z` stream so the inner tar contents are extracted directly.
 - One add batch uses one password for all links; for different passwords, add links in separate batches.
 - If decrypt/extract fails (missing/wrong password, tool error), the job moves to `decrypt_failed` and the failure is logged to job events.
 - If aria2 restarts, `dlq resume <id>` will re-queue the job and re-resolve the URL.
