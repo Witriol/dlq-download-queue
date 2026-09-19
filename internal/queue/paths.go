@@ -6,7 +6,10 @@ import (
 	"strings"
 )
 
-func cleanOutDir(outDir string, allowedRoots []string) (string, error) {
+// CleanOutDir normalizes an output directory and verifies it is contained by a
+// configured DATA_* root. It is shared by queue producers so all entry points
+// apply the same path boundary rules.
+func CleanOutDir(outDir string, allowedRoots []string) (string, error) {
 	if outDir == "" {
 		return "", errors.New("missing out_dir")
 	}
@@ -34,6 +37,10 @@ func cleanOutDir(outDir string, allowedRoots []string) (string, error) {
 		return "", errors.New("out_dir is not within an allowed DATA_* volume")
 	}
 	return clean, nil
+}
+
+func cleanOutDir(outDir string, allowedRoots []string) (string, error) {
+	return CleanOutDir(outDir, allowedRoots)
 }
 
 func cleanUserFilename(name string) (string, error) {

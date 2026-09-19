@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/Witriol/dlq-download-queue/internal/queue"
+	"github.com/Witriol/dlq-download-queue/internal/series"
 )
 
 const maxRequestBodyBytes = 1 << 20
@@ -40,6 +41,7 @@ type Server struct {
 	Queue    Queue
 	Meta     *Meta
 	Settings *Settings
+	Series   *series.Manager
 }
 
 func (s *Server) Handler() http.Handler {
@@ -53,6 +55,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/browse/mkdir", s.handleBrowseMkdir)
 	mux.HandleFunc("/api/browse", s.handleBrowse)
+	mux.HandleFunc("/series", s.handleSeries)
+	mux.HandleFunc("/series/preview", s.handleSeriesPreview)
+	mux.HandleFunc("/series/", s.handleSeriesItem)
+	mux.HandleFunc("/tvmaze/search", s.handleTVMazeSearch)
 	return withRequestLimit(mux, maxRequestBodyBytes)
 }
 

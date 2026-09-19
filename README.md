@@ -166,6 +166,7 @@ Presets for out_dir are served from `GET /meta` and derived from `DATA_*` volume
 | `DLQ_HTTP_ADDR` | — | Explicit `host:port` override (takes precedence over host/port) |
 | `DLQ_API` | — | Client base URL for CLI/UI (e.g. `http://127.0.0.1:8099`) |
 | `DLQ_WEBUI_PORT` | `8098` | Web UI container port |
+| `DLQ_WEBSHARE_WST` | — | Webshare session token used by series search and downloads |
 | `PUID` / `PGID` | — | Run dlqd + aria2 as this user/group |
 | `DATA_*` | — | Volume mappings (e.g. `DATA_TVSHOWS=/mnt/user/tvshows:/data/tvshows`) |
 
@@ -195,11 +196,11 @@ DLQ is designed for **trusted networks** (home LAN, Docker internal networking).
 - **Do not** expose DLQ ports directly to the public internet. Use a reverse proxy with authentication (e.g., Caddy, Traefik, nginx) if remote access is needed.
 - Set `ARIA2_SECRET` even in Docker to prevent unauthorized RPC access to aria2.
 - All `out_dir` values are validated against `DATA_*` container paths to prevent path traversal.
-- Credentials (e.g., for future resolver auth) should be provided via environment variables only; they are never logged.
+- Supply the Webshare session token through `DLQ_WEBSHARE_WST` (preferred), `WEBSHARE_WST`, or `WS_WST`. It is sent only in Webshare request bodies/headers and is never persisted in jobs or logged.
 
 ## Notes
 
-- Webshare resolver uses the public API in anonymous mode when possible and forces single-connection downloads for reliability.
+- Webshare resolver uses the public API in anonymous mode when possible and forces single-connection downloads for reliability. Series search generally requires a valid WST supplied through the environment.
 - MEGA resolver supports public file links (`mega.nz/file/...`) by resolving temporary download URLs and decrypting MEGA file payloads after download.
 - Auto decrypt/extract runs after successful download for archive extensions (`.zip`, `.rar`, `.7z`, `.tar*`, `.gz`, `.bz2`, `.xz`) when `auto_decrypt=true` in settings.
 - Pass `--archive-password` in `dlq add` (or `archive_password` in API/UI) for password-protected archives in that add batch.

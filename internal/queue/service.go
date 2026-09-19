@@ -35,6 +35,20 @@ func NewService(store *Store, dl Downloader, allowedRoots []string) *Service {
 }
 
 func (s *Service) CreateJob(ctx context.Context, url, outDir, name, site, archivePassword string, maxAttempts int) (int64, error) {
+	return s.createJob(ctx, url, outDir, name, site, archivePassword, maxAttempts, "")
+}
+
+// CreateJobWithSourceKey has the same validation as CreateJob, but returns an
+// existing job when sourceKey has already been accepted. It is intended for
+// durable integrations which may need to retry after a partial failure.
+func (s *Service) CreateJobWithSourceKey(ctx context.Context, url, outDir, name, site, archivePassword string, maxAttempts int, sourceKey string) (int64, error) {
+	if strings.TrimSpace(sourceKey) == "" {
+		return 0, errors.New("source key is required")
+	}
+	return s.createJob(ctx, url, outDir, name, site, archivePassword, maxAttempts, sourceKey)
+}
+
+func (s *Service) createJob(ctx context.Context, url, outDir, name, site, archivePassword string, maxAttempts int, sourceKey string) (int64, error) {
 	if maxAttempts <= 0 {
 		maxAttempts = 5
 	}
@@ -51,9 +65,19 @@ func (s *Service) CreateJob(ctx context.Context, url, outDir, name, site, archiv
 	if archivePassword != "" {
 		job.ArchivePassword = sqlNullString(archivePassword)
 	}
-	id, err := s.store.CreateJob(ctx, job)
+	var id int64
+	var inserted bool
+	if sourceKey != "" {
+		id, inserted, err = s.store.CreateJobWithSourceKey(ctx, job, sourceKey)
+	} else {
+		id, err = s.store.CreateJob(ctx, job)
+		inserted = err == nil
+	}
 	if err != nil {
 		return 0, err
+	}
+	if !inserted {
+		return id, nil
 	}
 	msg := "added url=" + redactURLForLog(url) + " out=" + cleanOut
 	if cleanName != "" {

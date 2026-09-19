@@ -15,6 +15,7 @@ import (
 	"github.com/Witriol/dlq-download-queue/internal/downloader"
 	"github.com/Witriol/dlq-download-queue/internal/queue"
 	"github.com/Witriol/dlq-download-queue/internal/resolver"
+	"github.com/Witriol/dlq-download-queue/internal/series"
 )
 
 func main() {
@@ -33,7 +34,8 @@ func main() {
 	store := queue.NewStore(dbConn)
 	service := queue.NewService(store, downloader.NewAria2Client(aria2RPC, aria2Secret), outDirPresets)
 
-	webshareResolver := resolver.NewWebshareResolver()
+	webshareClient := resolver.NewWebshareClient(resolver.WebshareOptions{})
+	webshareResolver := resolver.NewWebshareResolverWithClient(webshareClient)
 	megaResolver := resolver.NewMegaResolver()
 	httpResolver := resolver.NewHTTPResolver()
 	resRegistry := resolver.NewRegistry(
@@ -66,10 +68,29 @@ func main() {
 	defer cancel()
 	go runner.Start(ctx)
 
+	seriesStore := series.NewStore(dbConn)
+	seriesManager := &series.Manager{
+		Store:        seriesStore,
+		TVMaze:       series.NewTVMazeClient("", &http.Client{Timeout: 20 * time.Second}),
+		Webshare:     webshareClient,
+		Queue:        service,
+		AllowedRoots: outDirPresets,
+		JobState: func(ctx context.Context, id int64) (string, error) {
+			job, err := service.GetJob(ctx, id)
+			if err != nil {
+				return "", err
+			}
+			return job.Status, nil
+		},
+	}
+	seriesScheduler := &series.Scheduler{Manager: seriesManager, PollEvery: time.Minute}
+	go seriesScheduler.Start(ctx)
+
 	server := &api.Server{
 		Queue:    service,
 		Meta:     &api.Meta{OutDirPresets: outDirPresets, Version: versionString()},
 		Settings: settings,
+		Series:   seriesManager,
 	}
 	ln, err := net.Listen("tcp", listen)
 	if err != nil {

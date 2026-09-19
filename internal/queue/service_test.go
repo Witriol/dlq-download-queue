@@ -20,6 +20,27 @@ type serviceTestDownloader struct {
 	removeHits  int
 }
 
+func TestServiceCreateJobWithSourceKeyIsIdempotent(t *testing.T) {
+	store := newTestStore(t)
+	svc := NewService(store, &serviceTestDownloader{}, []string{"/data"})
+	ctx := context.Background()
+	first, err := svc.CreateJobWithSourceKey(ctx, "https://example.com/one", "/data", "", "http", "", 1, "series:1:episode:2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.CreateJobWithSourceKey(ctx, "https://example.com/two", "/data", "", "http", "", 1, "series:1:episode:2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Fatalf("source-key retry returned %d, want %d", second, first)
+	}
+	jobs, err := svc.ListJobs(ctx, "", true)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("jobs=%v err=%v", jobs, err)
+	}
+}
+
 func (d *serviceTestDownloader) AddURI(ctx context.Context, uri string, options map[string]string) (string, error) {
 	return "", nil
 }

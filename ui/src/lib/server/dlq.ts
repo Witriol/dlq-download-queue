@@ -1,4 +1,5 @@
 import { env } from '$env/dynamic/private';
+import { json } from '@sveltejs/kit';
 
 const DEFAULT_BASE = 'http://127.0.0.1:8099';
 
@@ -28,4 +29,12 @@ export async function forward(fetchFn: typeof fetch, path: string, init?: Reques
   const outHeaders = new Headers();
   outHeaders.set('content-type', resp.headers.get('content-type') || 'application/json');
   return new Response(body, { status: resp.status, headers: outHeaders });
+}
+
+export async function forwardOrError(fetchFn: typeof fetch, path: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await forward(fetchFn, path, init);
+  } catch (err) {
+    return json({ error: err instanceof Error ? err.message : 'dlq_unreachable' }, { status: 502 });
+  }
 }

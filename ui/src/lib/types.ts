@@ -43,3 +43,83 @@ export type Meta = {
   out_dir_presets: string[];
   version?: string;
 };
+
+/** The long-lived series watcher returned by the optional series API. */
+export type SeriesWatch = {
+  id: number | string;
+  enabled?: boolean;
+  tvmaze_id?: number;
+  display_name: string;
+  search_title?: string;
+  reference_webshare_ident?: string;
+  reference_filename?: string;
+  out_dir: string;
+  series_folder?: string;
+  organize_by_season?: boolean;
+  quality_profile?: Record<string, unknown>;
+  quality_profile_json?: string | Record<string, unknown>;
+  fallback_policy?: 'strict' | 'balanced' | 'manual' | string;
+  release_delay_seconds?: number;
+  preferred_wait_seconds?: number;
+  next_check_at?: string;
+  last_checked_at?: string;
+  last_error?: string;
+  status?: string;
+  attention_count?: number;
+  next_episode?: SeriesEpisode | null;
+  last_episode?: SeriesEpisode | null;
+  next_episode_at?: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type SeriesEpisode = {
+  id?: number | string;
+  tvmaze_episode_id?: number;
+  season?: number;
+  episode?: number;
+  episode_name?: string;
+  name?: string;
+  air_timestamp?: string;
+  state?: string;
+  chosen_filename?: string;
+  job_id?: number;
+};
+
+/** An episode waiting for a manual fallback decision and its persisted alternatives. */
+export type SeriesAttentionEpisode = SeriesEpisode & {
+  candidates: SeriesPreviewCandidate[];
+};
+
+export type SeriesProfileField = {
+  value?: unknown;
+  normalized?: unknown;
+  confidence?: number;
+  mode?: 'required' | 'preferred' | 'ignored' | string;
+  token?: string;
+};
+
+export type SeriesPreviewCandidate = {
+  ident?: string;
+  webshare_ident?: string;
+  filename?: string;
+  name?: string;
+  size_bytes?: number;
+  score?: number;
+  accepted?: boolean;
+  reasons?: string[];
+  reject_reasons?: string[];
+  [key: string]: unknown;
+};
+
+export type SeriesPreview = {
+  profile?: Record<string, unknown>;
+  quality_profile?: Record<string, unknown>;
+  reference_filename?: string;
+  search_title?: string;
+  episode?: SeriesEpisode | null;
+  candidates?: SeriesPreviewCandidate[];
+  total_candidates?: number;
+  error?: string;
+  [key: string]: unknown;
+};

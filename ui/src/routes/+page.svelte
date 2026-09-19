@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { addJobsBatch, browse, clearJobs, getEvents, getMeta, getSettings, listJobs, mkdir, postAction, postGroupAction, updateSettings } from '$lib/api';
+  import { addJobsBatch, clearJobs, getEvents, getMeta, getSettings, listJobs, postAction, postGroupAction, updateSettings } from '$lib/api';
   import { humanBytes, humanDuration } from '$lib/format';
   import { countsFor, detectSite, parseUrls, sortJobs } from '$lib/job-utils';
   import JobsTable from '$lib/components/JobsTable.svelte';
@@ -8,7 +8,8 @@
   import LogsModal from '$lib/components/LogsModal.svelte';
   import ClearConfirmModal from '$lib/components/ClearConfirmModal.svelte';
   import SettingsModal from '$lib/components/SettingsModal.svelte';
-  import BrowserModal from '$lib/components/BrowserModal.svelte';
+  import FolderBrowser from '$lib/components/FolderBrowser.svelte';
+  import SeriesSection from '$lib/components/SeriesSection.svelte';
 
   const statusOptions = ['', 'queued', 'resolving', 'downloading', 'paused', 'decrypting', 'completed', 'failed', 'decrypt_failed', 'deleted'];
   const outDirFavoritesStorageKey = 'dlq.outDirFavorites';
@@ -25,6 +26,8 @@
   let sortKey = 'id';
   let sortDir = 'desc';
   let showClearConfirm = false;
+  let activeTab = 'queue';
+  let watcherModalOpen = false;
 
   let addOutDir = '';
   let addUrlsText = '';
@@ -57,13 +60,7 @@
   let settingsSaving = false;
 
   let showBrowser = false;
-  let browserPath = '';
-  let browserDirs = [];
-  let browserParent = '';
-  let browserIsRoot = false;
-  let browserError = '';
-  let browserLoading = false;
-  let browserNewFolderName = '';
+  let bodyLockState = null;
 
   $: counts = countsFor(jobs);
   $: activeCount = counts.queued + counts.resolving + counts.downloading + counts.paused + counts.decrypting;
@@ -117,7 +114,7 @@
 
   function startTimer() {
     stopTimer();
-    if (!autoRefresh) return;
+    if (!autoRefresh || activeTab !== 'queue') return;
     const intervalMs = Math.max(1, Number(refreshInterval) || 1) * 1000;
     timer = setInterval(refresh, intervalMs);
   }
@@ -348,40 +345,8 @@
     saveOutDirFavorites();
   }
 
-  async function loadBrowser(path = '') {
-    browserLoading = true;
-    browserError = '';
-    try {
-      const result = await browse(path || undefined);
-      browserPath = result.path;
-      browserParent = result.parent;
-      browserDirs = result.dirs;
-      browserIsRoot = result.is_root;
-      browserNewFolderName = '';
-    } catch (err) {
-      browserError = err instanceof Error ? err.message : String(err);
-    } finally {
-      browserLoading = false;
-    }
-  }
-
-  async function createFolder() {
-    if (!browserNewFolderName.trim()) return;
-    browserError = '';
-    const newPath = browserPath ? `${browserPath}/${browserNewFolderName}` : `/${browserNewFolderName}`;
-    try {
-      await mkdir(newPath);
-      addOutDir = newPath;
-      showBrowser = false;
-      browserNewFolderName = '';
-    } catch (err) {
-      browserError = err instanceof Error ? err.message : String(err);
-    }
-  }
-
   function openBrowser() {
     showBrowser = true;
-    loadBrowser();
   }
 
   function selectBrowserPath(path) {
@@ -389,9 +354,44 @@
     showBrowser = false;
   }
 
+  function selectTab(tab, focus = false) {
+    if (watcherModalOpen && tab !== activeTab) return;
+    activeTab = tab;
+    if (tab === 'queue') refresh();
+    if (focus && typeof document !== 'undefined') {
+      requestAnimationFrame(() => document.getElementById(`${tab}-tab`)?.focus());
+    }
+  }
+
+  function handleTabKey(event) {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    event.preventDefault();
+    selectTab(activeTab === 'queue' ? 'automations' : 'queue', true);
+  }
+
+  function syncBodyScrollLock(isOpen) {
+    if (typeof document === 'undefined') return;
+    const body = document.body;
+    if (isOpen && !bodyLockState) {
+      bodyLockState = {
+        overflow: body.style.overflow,
+        paddingRight: body.style.paddingRight
+      };
+      const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
+      const hasStableScrollbarGutter = typeof CSS !== 'undefined' && CSS.supports?.('scrollbar-gutter: stable');
+      body.style.overflow = 'hidden';
+      if (!hasStableScrollbarGutter && scrollbarWidth > 0) body.style.paddingRight = `${scrollbarWidth}px`;
+    } else if (!isOpen && bodyLockState) {
+      body.style.overflow = bodyLockState.overflow;
+      body.style.paddingRight = bodyLockState.paddingRight;
+      bodyLockState = null;
+    }
+  }
+
   $: {
     autoRefresh;
     refreshInterval;
+    activeTab;
     startTimer();
   }
 
@@ -406,9 +406,8 @@
     if (showLogs) startLogsTimer();
   }
 
-  $: if (typeof document !== 'undefined') {
-    document.body.style.overflow = (showAdd || showBrowser || showLogs || showSettings || showClearConfirm) ? 'hidden' : '';
-  }
+  $: pageModalOpen = showAdd || showBrowser || showLogs || showSettings || showClearConfirm || watcherModalOpen;
+  $: syncBodyScrollLock(pageModalOpen);
 
   onMount(() => {
     refresh();
@@ -417,85 +416,75 @@
     return () => {
       stopTimer();
       stopLogsTimer();
+      syncBodyScrollLock(false);
     };
   });
 </script>
 
 <div class="page">
   <header class="header">
-    <div class="brand">
-      <div class="brand-title">
-        <h1>DLQ Control Deck</h1>
-        {#if metaVersion}
-          <span class="badge badge-version">{metaVersion}</span>
-        {/if}
-        {#if lastError}
-          <span class="badge badge-error" title={lastError}>Error: {lastError}</span>
-        {/if}
+    <div class="header-main">
+      <div class="brand">
+        <div class="brand-title">
+          <h1>DLQ Control Deck</h1>
+          {#if metaVersion}
+            <span class="badge badge-version">{metaVersion}</span>
+          {/if}
+        </div>
       </div>
+      <div class="app-tabs" role="tablist" aria-label="DLQ sections">
+        <button class:active={activeTab === 'queue'} role="tab" aria-selected={activeTab === 'queue'} aria-controls="queue-panel" id="queue-tab" tabindex={activeTab === 'queue' ? 0 : -1} type="button" disabled={watcherModalOpen} on:click={() => selectTab('queue')} on:keydown={handleTabKey}>Queue</button>
+        <button class:active={activeTab === 'automations'} role="tab" aria-selected={activeTab === 'automations'} aria-controls="automations-panel" id="automations-tab" tabindex={activeTab === 'automations' ? 0 : -1} type="button" disabled={watcherModalOpen} on:click={() => selectTab('automations')} on:keydown={handleTabKey}>Automations</button>
+      </div>
+      {#if lastError}
+        <span class="badge badge-error" title={lastError}>Error: {lastError}</span>
+      {/if}
     </div>
     <div class="toolbar">
       <button class="btn ghost" on:click={openSettings}>Settings</button>
     </div>
   </header>
 
-  <div class="stats">
-    <div class="stat stat-total">
-      <span>Total Jobs</span>
-      <strong>{jobs.length}</strong>
-    </div>
-    <div class="stat stat-active">
-      <span>Active</span>
-      <strong>{activeCount}</strong>
-    </div>
-    <div class="stat stat-success">
-      <span>Completed</span>
-      <strong>{counts.completed}</strong>
-    </div>
-    <div class="stat stat-failed">
-      <span>Failed</span>
-      <strong>{failedCount}</strong>
-    </div>
-    <div class="stat stat-speed">
-      <span>Total Speed</span>
-      <strong>{totalSpeedLabel}</strong>
-    </div>
-    <div class="stat stat-eta">
-      <span>Overall ETA</span>
-      <strong>{overallEtaLabel}</strong>
-      {#if overallEtaHint}
-        <small>{overallEtaHint}</small>
-      {/if}
-    </div>
+  <div id="queue-panel" role="tabpanel" aria-labelledby="queue-tab" hidden={activeTab !== 'queue'}>
+      <div class="stats">
+        <div class="stat stat-total"><span>Total Jobs</span><strong>{jobs.length}</strong></div>
+        <div class="stat stat-active"><span>Active</span><strong>{activeCount}</strong></div>
+        <div class="stat stat-success"><span>Completed</span><strong>{counts.completed}</strong></div>
+        <div class="stat stat-failed"><span>Failed</span><strong>{failedCount}</strong></div>
+        <div class="stat stat-speed"><span>Total Speed</span><strong>{totalSpeedLabel}</strong></div>
+        <div class="stat stat-eta"><span>Overall ETA</span><strong>{overallEtaLabel}</strong>{#if overallEtaHint}<small>{overallEtaHint}</small>{/if}</div>
+      </div>
+      <JobsTable
+        {jobs}
+        {sortedJobs}
+        {statusOptions}
+        {sortKey}
+        {sortDir}
+        bind:statusFilter
+        bind:includeDeleted
+        bind:autoRefresh
+        bind:refreshInterval
+        {sortIndicator}
+        onRefresh={refresh}
+        onToggleSort={toggleSort}
+        onSetSort={setSort}
+        onToggleSortDirection={toggleSortDirection}
+        onRequestClear={() => (showClearConfirm = true)}
+        onOpenLogs={openLogs}
+        onJobAction={handleAction}
+        onGroupAction={handleGroupAction}
+      />
   </div>
-
-  <JobsTable
-    {jobs}
-    {sortedJobs}
-    {statusOptions}
-    {sortKey}
-    {sortDir}
-    bind:statusFilter
-    bind:includeDeleted
-    bind:autoRefresh
-    bind:refreshInterval
-    {sortIndicator}
-    onRefresh={refresh}
-    onToggleSort={toggleSort}
-    onSetSort={setSort}
-    onToggleSortDirection={toggleSortDirection}
-    onRequestClear={() => (showClearConfirm = true)}
-    onOpenLogs={openLogs}
-    onJobAction={handleAction}
-    onGroupAction={handleGroupAction}
-  />
+  <div id="automations-panel" role="tabpanel" aria-labelledby="automations-tab" hidden={activeTab !== 'automations'}>
+    <SeriesSection {outDirPresets} {outDirFavorites} active={activeTab === 'automations'} onAddFavorite={addOutDirFavorite} onRemoveFavorite={removeOutDirFavorite} onModalOpenChange={(open) => (watcherModalOpen = open)} onChanged={refresh} />
+  </div>
 </div>
 
-<button class="fab" on:click={() => (showAdd = true)} aria-label="Add jobs">
-  <svg viewBox="0 0 24 24" aria-hidden="true">
-    <path d="M11 5h2v14h-2zM5 11h14v2H5z" />
-  </svg>
-</button>
+{#if activeTab === 'queue'}
+  <button class="fab" on:click={() => (showAdd = true)} aria-label="Add jobs">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v14h-2zM5 11h14v2H5z" /></svg>
+  </button>
+{/if}
 
 <AddJobsModal
   show={showAdd}
@@ -548,19 +537,9 @@
   onSave={saveSettings}
 />
 
-<BrowserModal
-  show={showBrowser}
-  {browserPath}
-  {browserDirs}
-  {browserParent}
-  {browserIsRoot}
-  {browserError}
-  {browserLoading}
-  browserFavoritePaths={outDirFavorites}
-  bind:browserNewFolderName
-  onClose={() => (showBrowser = false)}
-  onLoadBrowser={loadBrowser}
-  onCreateFolder={createFolder}
-  onSelectPath={selectBrowserPath}
+<FolderBrowser
+  bind:show={showBrowser}
+  favoritePaths={outDirFavorites}
+  onSelect={selectBrowserPath}
   onAddFavorite={addOutDirFavorite}
 />

@@ -42,6 +42,7 @@ type Job struct {
 	EngineGID       sql.NullString
 	Attempts        int
 	MaxAttempts     int
+	SourceKey       sql.NullString
 	NextRetryAt     sql.NullString
 	CreatedAt       string
 	UpdatedAt       string
@@ -62,9 +63,9 @@ func NewStore(db *sql.DB) *Store {
 func (s *Store) CreateJob(ctx context.Context, j *Job) (int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	res, err := s.db.ExecContext(ctx, `
-INSERT INTO jobs (url, site, out_dir, name, archive_password, status, created_at, updated_at, max_attempts)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, j.URL, j.Site, j.OutDir, j.Name, nullStringValue(j.ArchivePassword), StatusQueued, now, now, j.MaxAttempts)
+INSERT INTO jobs (url, site, out_dir, name, archive_password, source_key, status, created_at, updated_at, max_attempts)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, j.URL, j.Site, j.OutDir, j.Name, nullStringValue(j.ArchivePassword), nullStringValue(j.SourceKey), StatusQueued, now, now, j.MaxAttempts)
 	if err != nil {
 		return 0, err
 	}
@@ -73,6 +74,36 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		return 0, err
 	}
 	return id, nil
+}
+
+// CreateJobWithSourceKey creates a job once for a durable source key. It
+// returns an existing job on a retry, preventing duplicate queue entries when
+// a caller crashes after creating a job but before recording its association.
+func (s *Store) CreateJobWithSourceKey(ctx context.Context, j *Job, sourceKey string) (int64, bool, error) {
+	sourceKey = strings.TrimSpace(sourceKey)
+	if sourceKey == "" {
+		return 0, false, errors.New("source key is required")
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	res, err := s.db.ExecContext(ctx, `
+INSERT INTO jobs (url, site, out_dir, name, archive_password, source_key, status, created_at, updated_at, max_attempts)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(source_key) WHERE source_key IS NOT NULL DO NOTHING
+`, j.URL, j.Site, j.OutDir, j.Name, nullStringValue(j.ArchivePassword), sourceKey, StatusQueued, now, now, j.MaxAttempts)
+	if err != nil {
+		return 0, false, err
+	}
+	if inserted, err := res.RowsAffected(); err != nil {
+		return 0, false, err
+	} else if inserted > 0 {
+		id, err := res.LastInsertId()
+		return id, true, err
+	}
+	var id int64
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM jobs WHERE source_key = ?`, sourceKey).Scan(&id); err != nil {
+		return 0, false, err
+	}
+	return id, false, nil
 }
 
 func (s *Store) GetJob(ctx context.Context, id int64) (*Job, error) {
