@@ -114,6 +114,7 @@ type EpisodeView struct {
 	AirTimestamp    string `json:"air_timestamp,omitempty"`
 	State           string `json:"state"`
 	ChosenFilename  string `json:"chosen_filename,omitempty"`
+	SearchAttempts  int    `json:"search_attempts,omitempty"`
 	JobID           int64  `json:"job_id,omitempty"`
 }
 
@@ -240,9 +241,18 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*WatchView, er
 	if err != nil {
 		return nil, invalidWrap(err)
 	}
-	seriesFolder, err := normalizeSeriesFolder(req.SeriesFolder, req.DisplayName)
-	if err != nil {
-		return nil, invalidWrap(err)
+	// series_folder is retained as a request compatibility shim for older API
+	// clients. New clients select the final series directory directly in
+	// out_dir; old root + folder requests are collapsed into that same model.
+	if strings.TrimSpace(req.SeriesFolder) != "" {
+		seriesFolder, err := normalizeSeriesFolder(req.SeriesFolder)
+		if err != nil {
+			return nil, invalidWrap(err)
+		}
+		outDir, err = m.cleanOutDir(filepath.Join(outDir, seriesFolder))
+		if err != nil {
+			return nil, invalidWrap(err)
+		}
 	}
 	ident, filename, parsed, err := m.reference(ctx, req)
 	if err != nil {
@@ -283,7 +293,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*WatchView, er
 	if req.OrganizeBySeason != nil {
 		organizeBySeason = *req.OrganizeBySeason
 	}
-	w := &Watch{Enabled: true, TVMazeID: req.TVMazeID, DisplayName: strings.TrimSpace(req.DisplayName), SearchTitle: searchTitle, ReferenceWebshareIdent: ident, ReferenceFilename: filename, OutDir: outDir, SeriesFolder: seriesFolder, OrganizeBySeason: organizeBySeason, QualityProfileJSON: string(encoded), StartMode: mode, FallbackPolicy: policy, ReleaseDelaySeconds: releaseDelay, PreferredWaitSeconds: preferredWait}
+	w := &Watch{Enabled: true, TVMazeID: req.TVMazeID, DisplayName: strings.TrimSpace(req.DisplayName), SearchTitle: searchTitle, ReferenceWebshareIdent: ident, ReferenceFilename: filename, OutDir: outDir, SeriesFolder: "", OrganizeBySeason: organizeBySeason, QualityProfileJSON: string(encoded), StartMode: mode, FallbackPolicy: policy, ReleaseDelaySeconds: releaseDelay, PreferredWaitSeconds: preferredWait}
 	if mode == StartModeSpecific {
 		if req.InitialSeason <= 0 || req.InitialEpisode <= 0 {
 			return nil, invalid("specific start mode requires initial_season and initial_episode")
@@ -331,6 +341,9 @@ func (m *Manager) Update(ctx context.Context, id int64, req UpdateRequest) (*Wat
 	if err != nil {
 		return nil, err
 	}
+	originalPolicy := w.FallbackPolicy
+	searchSettingsChanged := req.SearchTitle != nil || req.ReleaseDelaySeconds != nil || req.PreferredWaitSeconds != nil || len(req.QualityProfile) > 0
+	policyChanged := req.FallbackPolicy != nil && *req.FallbackPolicy != originalPolicy
 	if req.OutDir != nil {
 		outDir, err := m.cleanOutDir(*req.OutDir)
 		if err != nil {
@@ -339,11 +352,10 @@ func (m *Manager) Update(ctx context.Context, id int64, req UpdateRequest) (*Wat
 		w.OutDir = outDir
 	}
 	if req.SeriesFolder != nil {
-		seriesFolder, err := normalizeSeriesFolder(*req.SeriesFolder, w.DisplayName)
-		if err != nil {
-			return nil, invalidWrap(err)
-		}
-		w.SeriesFolder = seriesFolder
+		// Updates always use the v2 exact out_dir contract. Ignoring this
+		// deprecated field also prevents a cached v1 UI from appending the show
+		// name again after the database migration has already done so.
+		w.SeriesFolder = ""
 	}
 	if req.OrganizeBySeason != nil {
 		w.OrganizeBySeason = *req.OrganizeBySeason
@@ -385,6 +397,26 @@ func (m *Manager) Update(ctx context.Context, id int64, req UpdateRequest) (*Wat
 		w.QualityProfileJSON = string(b)
 	}
 	if err := m.Store.UpdateWatch(ctx, w); err != nil {
+		return nil, err
+	}
+	// Strict and balanced watches have no candidate-review action once their
+	// bounded search cycle is exhausted. A relevant edit therefore starts a
+	// clean cycle. Manual snapshots remain intact unless the user explicitly
+	// changes fallback policy, preserving their deliberate review workflow.
+	if policyChanged || (searchSettingsChanged && w.FallbackPolicy != FallbackManual) {
+		reset, err := m.Store.ResetExhaustedEpisodes(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if reset > 0 {
+			_, _ = m.Store.AddEvent(ctx, id, 0, "info", "exhausted release searches reset after watch settings changed", mustJSON(map[string]any{"episodes": reset}))
+		}
+	}
+	// Any editable matching, timing, or destination setting can affect what
+	// should happen next. Re-evaluate promptly instead of retaining a stale
+	// schedule calculated from the previous settings.
+	now := m.now()
+	if err := m.Store.ScheduleWatchCheck(ctx, id, now); err != nil {
 		return nil, err
 	}
 	return m.Get(ctx, id)
@@ -512,14 +544,7 @@ func (m *Manager) SelectAttentionCandidate(ctx context.Context, watchID, episode
 }
 
 func (m *Manager) CheckNow(ctx context.Context, id int64) (*WatchView, error) {
-	w, err := m.Store.GetWatch(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	if !w.Enabled {
-		return nil, ErrWatchPaused
-	}
-	if err := m.processWatch(ctx, id); err != nil {
+	if err := m.processWatchWithRecovery(ctx, id); err != nil {
 		return nil, err
 	}
 	return m.Get(ctx, id)
@@ -549,10 +574,39 @@ func (m *Manager) CheckDue(ctx context.Context) error {
 }
 
 func (m *Manager) processWatch(ctx context.Context, id int64) error {
+	return m.processWatchWithOptions(ctx, id, false)
+}
+
+// processWatchWithRecovery is used only by the explicit Check now action.
+// Manual fallback episodes retain their server-generated candidate snapshot;
+// all other exhausted episodes get a new, user-requested search cycle.
+func (m *Manager) processWatchWithRecovery(ctx context.Context, id int64) error {
+	return m.processWatchWithOptions(ctx, id, true)
+}
+
+func (m *Manager) processWatchWithOptions(ctx context.Context, id int64, recoverExhausted bool) error {
 	if !m.startWatchRun(id) {
 		return ErrWatchCheckInProgress
 	}
 	defer m.finishWatchRun(id)
+	if recoverExhausted {
+		w, err := m.Store.GetWatch(ctx, id)
+		if err != nil {
+			return err
+		}
+		if !w.Enabled {
+			return ErrWatchPaused
+		}
+		if w.FallbackPolicy != FallbackManual {
+			reset, err := m.Store.ResetExhaustedEpisodes(ctx, id)
+			if err != nil {
+				return err
+			}
+			if reset > 0 {
+				_, _ = m.Store.AddEvent(ctx, id, 0, "info", "exhausted release searches reset by manual check", mustJSON(map[string]any{"episodes": reset}))
+			}
+		}
+	}
 	err := m.processWatchUnlocked(ctx, id)
 	if err != nil {
 		m.recordWatchFailure(ctx, id, err)
@@ -619,7 +673,14 @@ func (m *Manager) processWatchUnlocked(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-	next := now.Add(6 * time.Hour)
+	var next time.Time
+	hasNext := false
+	considerNext := func(candidate time.Time) {
+		if !hasNext || candidate.Before(next) {
+			next = candidate
+			hasNext = true
+		}
+	}
 	for i := range stored {
 		ep := &stored[i]
 		if ep.JobID.Valid {
@@ -632,6 +693,9 @@ func (m *Manager) processWatchUnlocked(ctx context.Context, id int64) error {
 			}
 			continue
 		}
+		if ep.State == StateNeedsAttention {
+			continue
+		}
 		air, ok := parseNullTime(ep.AirTimestamp)
 		if !ok {
 			continue
@@ -639,9 +703,7 @@ func (m *Manager) processWatchUnlocked(ctx context.Context, id int64) error {
 		searchFrom := air.Add(time.Duration(w.ReleaseDelaySeconds) * time.Second)
 		if now.Before(searchFrom) {
 			_ = m.Store.SetEpisodeState(ctx, ep.ID, StateWaitingRelease)
-			if searchFrom.Before(next) {
-				next = searchFrom
-			}
+			considerNext(searchFrom)
 			continue
 		}
 		scored, err := m.searchEpisode(ctx, w.SearchTitle, ep.Season, ep.Episode, profile, prefs)
@@ -675,22 +737,42 @@ func (m *Manager) processWatchUnlocked(ctx context.Context, id int64) error {
 			}
 			continue
 		}
-		state := StatePreferredNotFound
-		if waitExpired && w.FallbackPolicy == FallbackManual {
-			state = StateNeedsAttention
+		attempts, err := m.Store.IncrementEpisodeSearchAttempts(ctx, ep.ID)
+		if err != nil {
+			return err
 		}
-		if state == StateNeedsAttention {
-			if err := m.Store.SetEpisodeAttention(ctx, ep.ID, mustJSON(candidateViews(accepted))); err != nil {
+		if attempts >= MaxReleaseSearches {
+			if w.FallbackPolicy == FallbackManual {
+				if err := m.Store.SetEpisodeAttention(ctx, ep.ID, mustJSON(candidateViews(accepted))); err != nil {
+					return err
+				}
+			} else if err := m.Store.SetEpisodeState(ctx, ep.ID, StateNeedsAttention); err != nil {
 				return err
 			}
-		} else {
-			_ = m.Store.SetEpisodeState(ctx, ep.ID, state)
+			_, _ = m.Store.AddEvent(ctx, w.ID, ep.ID, "warning", "release not found after four searches", mustJSON(map[string]any{"attempts": attempts, "candidates": candidateViews(scored)}))
+			continue
 		}
-		_, _ = m.Store.AddEvent(ctx, w.ID, ep.ID, "warning", "preferred release not found", mustJSON(map[string]any{"candidates": candidateViews(scored)}))
-		check := now.Add(retryDelay(now.Sub(searchFrom)))
-		if check.Before(next) {
-			next = check
+		_ = m.Store.SetEpisodeState(ctx, ep.ID, StatePreferredNotFound)
+		_, _ = m.Store.AddEvent(ctx, w.ID, ep.ID, "warning", "release not found; retry scheduled", mustJSON(map[string]any{"attempt": attempts, "max_attempts": MaxReleaseSearches, "candidates": candidateViews(scored)}))
+		nextAttempt := now.Add(ReleaseRetryDelay)
+		// Keep the bounded retry lifecycle while ensuring Balanced gets one
+		// final search when its preferred-quality wait expires. With the
+		// defaults, the first three searches happen every two hours and the
+		// fourth happens at the 24-hour fallback point.
+		if w.FallbackPolicy == FallbackBalanced && attempts == MaxReleaseSearches-1 {
+			fallbackAt := searchFrom.Add(time.Duration(w.PreferredWaitSeconds) * time.Second)
+			if fallbackAt.After(nextAttempt) {
+				nextAttempt = fallbackAt
+			}
 		}
+		considerNext(nextAttempt)
+	}
+	// Release searches wait for the known episode time. TVmaze metadata is
+	// still refreshed daily so schedule changes and newly announced earlier
+	// episodes are discovered without resuming the old six-hour polling.
+	metadataRefresh := now.Add(24 * time.Hour)
+	if !hasNext || metadataRefresh.Before(next) {
+		next = metadataRefresh
 	}
 	if next.Before(now.Add(5 * time.Minute)) {
 		next = now.Add(5 * time.Minute)
@@ -929,22 +1011,19 @@ func (m *Manager) episodeOutDir(w *Watch, season int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	seriesFolder, err := normalizeSeriesFolder(w.SeriesFolder, w.DisplayName)
-	if err != nil {
-		return "", err
-	}
-	parts := []string{root, seriesFolder}
+	parts := []string{root}
 	if w.OrganizeBySeason {
 		parts = append(parts, fmt.Sprintf("s%02d", season))
 	}
 	return m.cleanOutDir(filepath.Join(parts...))
 }
 
-func normalizeSeriesFolder(input, displayName string) (string, error) {
+func normalizeSeriesFolder(input string) (string, error) {
 	input = strings.TrimSpace(input)
 	if input == "" {
-		input = strings.TrimSpace(displayName)
-	} else if filepath.IsAbs(input) || strings.ContainsAny(input, "/\\") || input == "." || input == ".." {
+		return "", errors.New("series_folder must contain letters or numbers")
+	}
+	if filepath.IsAbs(input) || strings.ContainsAny(input, "/\\") || input == "." || input == ".." {
 		return "", errors.New("series_folder must be a single folder name")
 	}
 	var out strings.Builder
@@ -1071,7 +1150,7 @@ func attentionCandidates(snapshot sql.NullString) ([]CandidateView, error) {
 }
 
 func episodeView(e Episode) EpisodeView {
-	v := EpisodeView{ID: e.ID, TVMazeEpisodeID: e.TVMazeEpisodeID, Season: e.Season, Episode: e.Episode, EpisodeName: e.EpisodeName, AirTimestamp: nullString(e.AirTimestamp), State: e.State}
+	v := EpisodeView{ID: e.ID, TVMazeEpisodeID: e.TVMazeEpisodeID, Season: e.Season, Episode: e.Episode, EpisodeName: e.EpisodeName, AirTimestamp: nullString(e.AirTimestamp), State: e.State, SearchAttempts: e.SearchAttempts}
 	if e.ChosenFilename.Valid {
 		v.ChosenFilename = e.ChosenFilename.String
 	}
@@ -1110,16 +1189,6 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-func retryDelay(age time.Duration) time.Duration {
-	switch {
-	case age < 12*time.Hour:
-		return 30 * time.Minute
-	case age < 48*time.Hour:
-		return 2 * time.Hour
-	default:
-		return 6 * time.Hour
-	}
 }
 func mustJSON(v any) string { b, _ := json.Marshal(v); return string(b) }
 func parseID(value string) (int64, error) {

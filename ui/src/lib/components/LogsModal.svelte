@@ -1,5 +1,6 @@
 <script>
   import { displayStatus } from '$lib/status';
+  import { formatDateTime } from '$lib/format';
 
   export let show = false;
   export let logsJob = null;
@@ -28,16 +29,7 @@
     if (!match) return text;
     const dt = new Date(match[1]);
     if (Number.isNaN(dt.getTime())) return text;
-    const ts = dt.toLocaleString(undefined, {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-      timeZoneName: 'short'
-    });
+    const ts = formatDateTime(dt.toISOString());
     return `${ts} ${match[2]} ${match[3]}`;
   }
 </script>

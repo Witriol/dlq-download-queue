@@ -373,6 +373,7 @@ type JobView struct {
 	ArchiveIsMultipart bool   `json:"archive_is_multipart,omitempty"`
 	CreatedAt          string `json:"created_at"`
 	UpdatedAt          string `json:"updated_at"`
+	StatusChangedAt    string `json:"status_changed_at"`
 }
 
 func toView(j Job) JobView {
@@ -386,6 +387,11 @@ func toView(j Job) JobView {
 		BytesDone: j.BytesDone,
 		CreatedAt: j.CreatedAt,
 		UpdatedAt: j.UpdatedAt,
+	}
+	if j.StatusChangedAt.Valid {
+		v.StatusChangedAt = j.StatusChangedAt.String
+	} else {
+		v.StatusChangedAt = j.UpdatedAt
 	}
 	if j.Filename.Valid {
 		v.Filename = j.Filename.String

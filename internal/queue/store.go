@@ -46,6 +46,7 @@ type Job struct {
 	NextRetryAt     sql.NullString
 	CreatedAt       string
 	UpdatedAt       string
+	StatusChangedAt sql.NullString
 	StartedAt       sql.NullString
 	CompletedAt     sql.NullString
 	DeletedAt       sql.NullString
@@ -63,9 +64,9 @@ func NewStore(db *sql.DB) *Store {
 func (s *Store) CreateJob(ctx context.Context, j *Job) (int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	res, err := s.db.ExecContext(ctx, `
-INSERT INTO jobs (url, site, out_dir, name, archive_password, source_key, status, created_at, updated_at, max_attempts)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, j.URL, j.Site, j.OutDir, j.Name, nullStringValue(j.ArchivePassword), nullStringValue(j.SourceKey), StatusQueued, now, now, j.MaxAttempts)
+INSERT INTO jobs (url, site, out_dir, name, archive_password, source_key, status, created_at, updated_at, status_changed_at, max_attempts)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, j.URL, j.Site, j.OutDir, j.Name, nullStringValue(j.ArchivePassword), nullStringValue(j.SourceKey), StatusQueued, now, now, now, j.MaxAttempts)
 	if err != nil {
 		return 0, err
 	}
@@ -86,10 +87,10 @@ func (s *Store) CreateJobWithSourceKey(ctx context.Context, j *Job, sourceKey st
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	res, err := s.db.ExecContext(ctx, `
-INSERT INTO jobs (url, site, out_dir, name, archive_password, source_key, status, created_at, updated_at, max_attempts)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO jobs (url, site, out_dir, name, archive_password, source_key, status, created_at, updated_at, status_changed_at, max_attempts)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(source_key) WHERE source_key IS NOT NULL DO NOTHING
-`, j.URL, j.Site, j.OutDir, j.Name, nullStringValue(j.ArchivePassword), sourceKey, StatusQueued, now, now, j.MaxAttempts)
+`, j.URL, j.Site, j.OutDir, j.Name, nullStringValue(j.ArchivePassword), sourceKey, StatusQueued, now, now, now, j.MaxAttempts)
 	if err != nil {
 		return 0, false, err
 	}
@@ -109,14 +110,14 @@ ON CONFLICT(source_key) WHERE source_key IS NOT NULL DO NOTHING
 func (s *Store) GetJob(ctx context.Context, id int64) (*Job, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT id, url, site, out_dir, name, archive_password, resolved_url, filename, size_bytes, bytes_done, download_speed, eta_seconds, status, error, error_code,
-       engine, engine_gid, attempts, max_attempts, next_retry_at, created_at, updated_at, started_at, completed_at, deleted_at
+       engine, engine_gid, attempts, max_attempts, next_retry_at, created_at, updated_at, status_changed_at, started_at, completed_at, deleted_at
 FROM jobs WHERE id = ?
 `, id)
 	var j Job
 	err := row.Scan(
 		&j.ID, &j.URL, &j.Site, &j.OutDir, &j.Name, &j.ArchivePassword, &j.ResolvedURL, &j.Filename, &j.SizeBytes, &j.BytesDone, &j.DownloadSpeed, &j.EtaSeconds,
 		&j.Status, &j.Error, &j.ErrorCode, &j.Engine, &j.EngineGID, &j.Attempts, &j.MaxAttempts,
-		&j.NextRetryAt, &j.CreatedAt, &j.UpdatedAt, &j.StartedAt, &j.CompletedAt, &j.DeletedAt,
+		&j.NextRetryAt, &j.CreatedAt, &j.UpdatedAt, &j.StatusChangedAt, &j.StartedAt, &j.CompletedAt, &j.DeletedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -127,7 +128,7 @@ FROM jobs WHERE id = ?
 func (s *Store) ListJobs(ctx context.Context, status string, includeDeleted bool) ([]Job, error) {
 	query := `
 SELECT id, url, site, out_dir, name, archive_password, resolved_url, filename, size_bytes, bytes_done, download_speed, eta_seconds, status, error, error_code,
-       engine, engine_gid, attempts, max_attempts, next_retry_at, created_at, updated_at, started_at, completed_at, deleted_at
+       engine, engine_gid, attempts, max_attempts, next_retry_at, created_at, updated_at, status_changed_at, started_at, completed_at, deleted_at
 FROM jobs`
 	args := []any{}
 	where := []string{}
@@ -153,7 +154,7 @@ FROM jobs`
 		if err := rows.Scan(
 			&j.ID, &j.URL, &j.Site, &j.OutDir, &j.Name, &j.ArchivePassword, &j.ResolvedURL, &j.Filename, &j.SizeBytes, &j.BytesDone, &j.DownloadSpeed, &j.EtaSeconds,
 			&j.Status, &j.Error, &j.ErrorCode, &j.Engine, &j.EngineGID, &j.Attempts, &j.MaxAttempts,
-			&j.NextRetryAt, &j.CreatedAt, &j.UpdatedAt, &j.StartedAt, &j.CompletedAt, &j.DeletedAt,
+			&j.NextRetryAt, &j.CreatedAt, &j.UpdatedAt, &j.StatusChangedAt, &j.StartedAt, &j.CompletedAt, &j.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -167,7 +168,7 @@ FROM jobs`
 func (s *Store) ListPendingPostprocess(ctx context.Context, limit int) ([]Job, error) {
 	query := `
 SELECT id, url, site, out_dir, name, archive_password, resolved_url, filename, size_bytes, bytes_done, download_speed, eta_seconds, status, error, error_code,
-       engine, engine_gid, attempts, max_attempts, next_retry_at, created_at, updated_at, started_at, completed_at, deleted_at
+       engine, engine_gid, attempts, max_attempts, next_retry_at, created_at, updated_at, status_changed_at, started_at, completed_at, deleted_at
 FROM jobs
 WHERE deleted_at IS NULL
   AND (
@@ -191,7 +192,7 @@ ORDER BY id ASC`
 		if err := rows.Scan(
 			&j.ID, &j.URL, &j.Site, &j.OutDir, &j.Name, &j.ArchivePassword, &j.ResolvedURL, &j.Filename, &j.SizeBytes, &j.BytesDone, &j.DownloadSpeed, &j.EtaSeconds,
 			&j.Status, &j.Error, &j.ErrorCode, &j.Engine, &j.EngineGID, &j.Attempts, &j.MaxAttempts,
-			&j.NextRetryAt, &j.CreatedAt, &j.UpdatedAt, &j.StartedAt, &j.CompletedAt, &j.DeletedAt,
+			&j.NextRetryAt, &j.CreatedAt, &j.UpdatedAt, &j.StatusChangedAt, &j.StartedAt, &j.CompletedAt, &j.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -278,7 +279,7 @@ func (s *Store) ClaimNextQueued(ctx context.Context) (*Job, error) {
 		}
 		row := tx.QueryRowContext(ctx, `
 SELECT id, url, site, out_dir, name, archive_password, resolved_url, filename, size_bytes, bytes_done, status, error, error_code,
-       download_speed, eta_seconds, engine, engine_gid, attempts, max_attempts, next_retry_at, created_at, updated_at, started_at, completed_at, deleted_at
+       download_speed, eta_seconds, engine, engine_gid, attempts, max_attempts, next_retry_at, created_at, updated_at, status_changed_at, started_at, completed_at, deleted_at
 FROM jobs
 WHERE status = ? AND deleted_at IS NULL AND (next_retry_at IS NULL OR next_retry_at <= ?)
 ORDER BY id ASC
@@ -288,7 +289,7 @@ LIMIT 1
 		if err := row.Scan(
 			&j.ID, &j.URL, &j.Site, &j.OutDir, &j.Name, &j.ArchivePassword, &j.ResolvedURL, &j.Filename, &j.SizeBytes, &j.BytesDone,
 			&j.Status, &j.Error, &j.ErrorCode, &j.DownloadSpeed, &j.EtaSeconds, &j.Engine, &j.EngineGID, &j.Attempts, &j.MaxAttempts,
-			&j.NextRetryAt, &j.CreatedAt, &j.UpdatedAt, &j.StartedAt, &j.CompletedAt, &j.DeletedAt,
+			&j.NextRetryAt, &j.CreatedAt, &j.UpdatedAt, &j.StatusChangedAt, &j.StartedAt, &j.CompletedAt, &j.DeletedAt,
 		); err != nil {
 			_ = tx.Rollback()
 			if errors.Is(err, sql.ErrNoRows) {

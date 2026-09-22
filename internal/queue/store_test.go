@@ -86,6 +86,50 @@ func TestStoreRequeueClearsFields(t *testing.T) {
 	}
 }
 
+func TestStatusChangedAtIgnoresStatusNeutralUpdates(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	id, err := store.CreateJob(ctx, &Job{URL: "https://example.com/file", OutDir: "/data", MaxAttempts: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const original = "2000-01-02T03:04:05Z"
+	if _, err := store.db.ExecContext(ctx, `UPDATE jobs SET status_changed_at = ? WHERE id = ?`, original, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateResolving(ctx, id, "https://resolved", "file.bin", 42); err != nil {
+		t.Fatal(err)
+	}
+	job, err := store.GetJob(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !job.StatusChangedAt.Valid || job.StatusChangedAt.String != original {
+		t.Fatalf("metadata update changed status timestamp to %q", job.StatusChangedAt.String)
+	}
+	if err := store.MarkDownloading(ctx, id, "aria2", "gid"); err != nil {
+		t.Fatal(err)
+	}
+	transitioned, err := store.GetJob(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !transitioned.StatusChangedAt.Valid || transitioned.StatusChangedAt.String == original {
+		t.Fatalf("status transition did not update timestamp: %+v", transitioned.StatusChangedAt)
+	}
+	changedAt := transitioned.StatusChangedAt.String
+	if err := store.UpdateProgress(ctx, id, 10, StatusDownloading, 1, 2); err != nil {
+		t.Fatal(err)
+	}
+	progressed, err := store.GetJob(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if progressed.StatusChangedAt.String != changedAt {
+		t.Fatalf("progress update changed status timestamp from %q to %q", changedAt, progressed.StatusChangedAt.String)
+	}
+}
+
 func TestStoreRequeueResetAttemptsClearsAttempts(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

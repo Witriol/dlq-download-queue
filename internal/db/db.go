@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"path"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -37,6 +39,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   next_retry_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  status_changed_at TEXT,
   started_at TEXT,
   completed_at TEXT,
   deleted_at TEXT
@@ -66,13 +69,14 @@ CREATE TABLE IF NOT EXISTS series_watches (
   reference_filename TEXT NOT NULL,
   out_dir TEXT NOT NULL,
   series_folder TEXT NOT NULL DEFAULT '',
+  output_path_version INTEGER NOT NULL DEFAULT 2,
   organize_by_season INTEGER NOT NULL DEFAULT 1,
   quality_profile_json TEXT NOT NULL DEFAULT '{}',
   start_mode TEXT NOT NULL DEFAULT 'template',
   start_season INTEGER,
   start_episode INTEGER,
   fallback_policy TEXT NOT NULL DEFAULT 'strict',
-  release_delay_seconds INTEGER NOT NULL DEFAULT 21600,
+  release_delay_seconds INTEGER NOT NULL DEFAULT 7200,
   preferred_wait_seconds INTEGER NOT NULL DEFAULT 86400,
   next_check_at TEXT,
   last_checked_at TEXT,
@@ -97,6 +101,7 @@ CREATE TABLE IF NOT EXISTS series_episodes (
   chosen_filename TEXT,
   selection_snapshot_json TEXT,
   attention_candidates_json TEXT,
+  search_attempts INTEGER NOT NULL DEFAULT 0,
   job_id INTEGER,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -165,11 +170,37 @@ func Open(path string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureColumn(ctx, db, "status_changed_at", "TEXT"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE jobs SET status_changed_at = COALESCE(status_changed_at, deleted_at, completed_at, updated_at, created_at)`); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if _, err := db.ExecContext(ctx, `
+CREATE TRIGGER IF NOT EXISTS trg_jobs_status_changed_at
+AFTER UPDATE OF status ON jobs
+WHEN OLD.status IS NOT NEW.status
+BEGIN
+  UPDATE jobs SET status_changed_at = COALESCE(NEW.updated_at, CURRENT_TIMESTAMP) WHERE id = NEW.id;
+END`); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if _, err := db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_source_key ON jobs(source_key) WHERE source_key IS NOT NULL`); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	if err := ensureTableColumn(ctx, db, "series_watches", "series_folder", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureTableColumn(ctx, db, "series_watches", "output_path_version", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := migrateSeriesOutputPaths(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -181,7 +212,56 @@ func Open(path string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureTableColumn(ctx, db, "series_episodes", "search_attempts", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	// Do not rewrite the former six-hour default here. Older databases do not
+	// record whether 21600 was the historical default or an explicit user
+	// choice, so changing it would silently destroy a valid configuration. New
+	// watches use the schema's two-hour default (and the manager's explicit
+	// default); existing watches retain their recorded timing.
 	return db, nil
+}
+
+// migrateSeriesOutputPaths converts the original root + series_folder model
+// to the v2 contract where out_dir is the exact user-selected series folder.
+func migrateSeriesOutputPaths(ctx context.Context, db *sql.DB) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT id, out_dir, series_folder FROM series_watches WHERE output_path_version < 2`)
+	if err != nil {
+		return err
+	}
+	type watchPath struct {
+		id                int64
+		outDir, subfolder string
+	}
+	var watches []watchPath
+	for rows.Next() {
+		var item watchPath
+		if err := rows.Scan(&item.id, &item.outDir, &item.subfolder); err != nil {
+			rows.Close()
+			return err
+		}
+		watches = append(watches, item)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, watch := range watches {
+		outDir := strings.TrimSpace(watch.outDir)
+		if folder := strings.TrimSpace(watch.subfolder); folder != "" {
+			outDir = path.Join(outDir, folder)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE series_watches SET out_dir = ?, series_folder = '', output_path_version = 2 WHERE id = ?`, outDir, watch.id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func ensureColumn(ctx context.Context, db *sql.DB, name, colType string) error {

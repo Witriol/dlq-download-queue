@@ -1,5 +1,6 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
+  import { formatDateTime } from '$lib/format';
   import { createSeries, listSeries, listSeriesAttention, previewSeries, searchTVMaze, selectSeriesCandidate, seriesAction, updateSeries } from '$lib/api';
   import FolderBrowser from '$lib/components/FolderBrowser.svelte';
   import SeriesAttentionModal from '$lib/components/SeriesAttentionModal.svelte';
@@ -23,7 +24,9 @@
   let actionError = '';
   let busyAction = '';
   let showWizard = false;
+  let wizardOpener = null;
   let wizardStep = 0;
+  let wizardFurthestStep = 0;
   let wizardBusy = false;
   let wizardError = '';
   let wizardNotice = '';
@@ -39,12 +42,12 @@
   let browserTarget = 'draft';
   let editing = null;
   let editDraft = {};
+  let editError = '';
   let previewTotalCandidates = 0;
   let previewSeason = 1;
   let refreshTimer = null;
   let mounted = false;
   let wasActive = false;
-  let autoSeriesFolder = '';
   let attentionWatch = null;
   let attentionEpisodes = [];
   let attentionLoading = false;
@@ -64,7 +67,7 @@
       initial_season: 1,
       initial_episode: 1,
       fallback_policy: 'strict',
-      release_delay_seconds: 21600,
+      release_delay_seconds: 7200,
       preferred_wait_seconds: 86400,
       series_folder: '',
       organize_by_season: true,
@@ -107,6 +110,7 @@
   }
 
   function openWizard() {
+    wizardOpener = typeof document !== 'undefined' && document.activeElement instanceof HTMLElement ? document.activeElement : null;
     draft = blankDraft();
     profile = {};
     profileFields = [];
@@ -117,8 +121,8 @@
     tvmazeQuery = '';
     previewTotalCandidates = 0;
     previewSeason = 1;
-    autoSeriesFolder = '';
     wizardStep = 0;
+    wizardFurthestStep = 0;
     wizardError = '';
     wizardNotice = '';
     showWizard = true;
@@ -128,6 +132,11 @@
     if (wizardBusy) return;
     showWizard = false;
     browserOpen = false;
+    restoreWizardFocus();
+  }
+
+  function restoreWizardFocus() {
+    tick().then(() => wizardOpener?.focus());
   }
 
   function profileObject(response) {
@@ -155,13 +164,45 @@
     });
   }
 
+  function showWizardError(message, fieldId) {
+    wizardError = message;
+    if (fieldId && typeof document !== 'undefined') {
+      requestAnimationFrame(() => document.getElementById(fieldId)?.focus());
+    }
+    return false;
+  }
+
+  function validateWizardStep(step) {
+    wizardError = '';
+    if (step === 0) {
+      if (!draft.reference_url.trim()) return showWizardError('Add a Webshare reference URL to continue.', 'series-reference');
+      if (!/^https?:\/\/(?:www\.)?webshare\.cz\//i.test(draft.reference_url.trim())) {
+        return showWizardError('Use a valid webshare.cz file URL.', 'series-reference');
+      }
+      if (!draft.out_dir.trim()) return showWizardError('Choose a download folder to continue.', 'series-out-dir');
+    }
+    if (step === 1 && !selectedShow?.id) {
+      return showWizardError('Choose the matching TVmaze show to continue.', 'tvmaze-search');
+    }
+    if (step === 2) {
+      if (!['strict', 'balanced', 'manual'].includes(draft.fallback_policy)) return showWizardError('Choose a download policy to continue.');
+      if (!draft.search_title.trim()) return showWizardError('Add a Webshare search title to continue.', 'search-title');
+      if (!['template', 'continue', 'specific'].includes(draft.initial_mode)) return showWizardError('Choose where episode tracking should start.', 'initial-mode');
+      if (draft.initial_mode === 'specific') {
+        if (Number(draft.initial_season) < 1) return showWizardError('Season must be 1 or greater.', 'initial-season');
+        if (Number(draft.initial_episode) < 1) return showWizardError('Episode must be 1 or greater.', 'initial-episode');
+      }
+      if (!Number.isFinite(Number(draft.preferred_wait_seconds)) || Number(draft.preferred_wait_seconds) < 0) {
+        return showWizardError('Preferred wait must be zero or greater.', 'preferred-wait');
+      }
+    }
+    return true;
+  }
+
   async function analyzeReference() {
     wizardError = '';
     wizardNotice = '';
-    if (!draft.reference_url.trim()) {
-      wizardError = 'Paste a Webshare reference URL first.';
-      return;
-    }
+    if (!validateWizardStep(0)) return;
     wizardBusy = true;
     try {
       const response = await previewSeries({ reference_url: draft.reference_url.trim(), out_dir: draft.out_dir });
@@ -174,6 +215,7 @@
       draft.display_name = response?.display_name || draft.display_name;
       if (response?.error) wizardNotice = response.error;
       wizardStep = 1;
+      wizardFurthestStep = Math.max(wizardFurthestStep, 1);
       tvmazeQuery = draft.search_title || draft.display_name || '';
       if (tvmazeQuery) await findShows();
     } catch (err) {
@@ -205,9 +247,13 @@
 
   async function findShows() {
     const query = normalizeTVMazeQuery(tvmazeQuery);
-    if (!query) return;
+    if (!query) {
+      showWizardError('Enter a series name or TVmaze URL.', 'tvmaze-search');
+      return;
+    }
     selectedShow = null;
     draft.tvmaze_id = undefined;
+    invalidateWizardFrom(1);
     tvmazeBusy = true;
     wizardError = '';
     try {
@@ -224,21 +270,16 @@
     selectedShow = show;
     draft.tvmaze_id = Number(show.id);
     draft.display_name = show.name;
-    const nextAutoFolder = slugify(show.name);
-    if (!draft.series_folder || draft.series_folder === autoSeriesFolder) {
-      draft.series_folder = nextAutoFolder;
-    }
-    autoSeriesFolder = nextAutoFolder;
     if (!draft.search_title) draft.search_title = show.name;
+    wizardError = '';
+    wizardNotice = '';
+    invalidateWizardFrom(2);
   }
 
   async function runCandidatePreview() {
     wizardError = '';
     wizardNotice = '';
-    if (!selectedShow?.id) {
-      wizardError = 'Choose the exact TVmaze show before previewing candidates.';
-      return;
-    }
+    if (!validateWizardStep(1) || !validateWizardStep(2)) return;
     syncProfile();
     wizardBusy = true;
     try {
@@ -251,6 +292,7 @@
       }
       wizardNotice = `${candidates.length} of ${previewTotalCandidates} candidate${previewTotalCandidates === 1 ? '' : 's'} shown. Different series titles are hidden.`;
       wizardStep = 3;
+      wizardFurthestStep = Math.max(wizardFurthestStep, 3);
     } catch (err) {
       wizardError = err instanceof Error ? err.message : String(err);
     } finally {
@@ -260,13 +302,15 @@
 
   async function activate() {
     wizardError = '';
-    if (!draft.out_dir.trim()) { wizardError = 'Choose an output folder.'; wizardStep = 0; return; }
-    if (!selectedShow?.id) { wizardError = 'Choose a TVmaze show.'; wizardStep = 1; return; }
+    for (const step of [0, 1, 2]) {
+      if (!validateWizardStep(step)) { wizardStep = step; return; }
+    }
     syncProfile();
     wizardBusy = true;
     try {
       await createSeries({ ...draft, start_mode: draft.initial_mode, tvmaze_id: Number(selectedShow.id), display_name: selectedShow.name, quality_profile: draft.quality_profile });
       showWizard = false;
+      restoreWizardFocus();
       await refresh();
       onChanged();
     } catch (err) {
@@ -355,33 +399,41 @@
 
   function startEdit(watch) {
     editing = watch;
+    editError = '';
     editDraft = {
       search_title: watch.search_title || watch.display_name,
       out_dir: watch.out_dir || '',
       fallback_policy: watch.fallback_policy || 'strict',
-      release_delay_hours: Math.round(Number(watch.release_delay_seconds ?? 21600) / 3600),
       preferred_wait_hours: Math.round(Number(watch.preferred_wait_seconds ?? 86400) / 3600),
-      series_folder: watch.series_folder || slugify(watch.display_name),
       organize_by_season: watch.organize_by_season !== false
     };
   }
 
   async function saveEdit() {
     if (!editing) return;
-    actionError = '';
+    editError = '';
+    if (!String(editDraft.search_title || '').trim()) {
+      editError = 'Add a Webshare search title.';
+      requestAnimationFrame(() => document.getElementById('edit-search-title')?.focus());
+      return;
+    }
+    if (!String(editDraft.out_dir || '').trim()) {
+      editError = 'Choose a series folder.';
+      requestAnimationFrame(() => document.getElementById('edit-series-folder')?.focus());
+      return;
+    }
     busyAction = `${editing.id}:edit`;
     try {
-      const { release_delay_hours, preferred_wait_hours, ...payload } = editDraft;
+      const { preferred_wait_hours, ...payload } = editDraft;
       await updateSeries(editing.id, {
         ...payload,
-        release_delay_seconds: Math.max(0, Number(release_delay_hours || 0) * 3600),
         preferred_wait_seconds: Math.max(0, Number(preferred_wait_hours || 0) * 3600)
       });
       editing = null;
       await refresh();
       onChanged();
     } catch (err) {
-      actionError = err instanceof Error ? err.message : String(err);
+      editError = err instanceof Error ? err.message : String(err);
     } finally {
       busyAction = '';
     }
@@ -394,28 +446,54 @@
 
   function selectFolder(path) {
     if (browserTarget === 'edit') editDraft.out_dir = path;
-    else draft.out_dir = path;
+    else {
+      draft.out_dir = path;
+      invalidateWizardFrom(2);
+    }
     browserOpen = false;
   }
 
   function stepBack() {
     wizardError = '';
+    wizardNotice = '';
     wizardStep = Math.max(0, wizardStep - 1);
+  }
+
+  function invalidateWizardFrom(step) {
+    wizardFurthestStep = Math.min(wizardFurthestStep, step);
+    if (wizardStep > step) wizardStep = step;
+    if (step < 3) {
+      candidates = [];
+      previewTotalCandidates = 0;
+    }
+  }
+
+  function goToWizardStep(step) {
+    if (wizardBusy || step < 0 || step > wizardFurthestStep || step === wizardStep) return;
+    wizardError = '';
+    wizardNotice = '';
+    wizardStep = step;
   }
 
   function stepForward() {
     wizardError = '';
+    if (wizardStep < wizardFurthestStep) {
+      wizardStep += 1;
+      return;
+    }
     if (wizardStep === 0) analyzeReference();
     else if (wizardStep === 1) {
-      if (!selectedShow) { wizardError = 'Choose a TVmaze show to continue.'; return; }
+      if (!validateWizardStep(1)) return;
       wizardStep = 2;
-    } else if (wizardStep === 2) runCandidatePreview();
+      wizardFurthestStep = Math.max(wizardFurthestStep, 2);
+    } else if (wizardStep === 2) {
+      if (!validateWizardStep(2)) return;
+      runCandidatePreview();
+    }
   }
 
   function formatDate(value) {
-    if (!value) return '—';
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+    return formatDateTime(value);
   }
 
   function episodeLabel(ep) {
@@ -425,6 +503,23 @@
     const code = Number.isFinite(season) && Number.isFinite(episode)
       ? `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}` : '';
     return [code, ep.episode_name || ep.name].filter(Boolean).join(' · ') || 'Scheduled';
+  }
+
+  function episodeCode(ep) {
+    if (!ep) return 'No episode';
+    const season = Number(ep.season);
+    const episode = Number(ep.episode);
+    return Number.isFinite(season) && Number.isFinite(episode)
+      ? `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
+      : 'Upcoming';
+  }
+
+  function episodeTitle(ep) {
+    return ep?.episode_name || ep?.name || 'Waiting for schedule';
+  }
+
+  function nextEpisodeTime(watch) {
+    return watch.next_episode?.air_timestamp || watch.next_episode_at;
   }
 
   function prettyPolicy(value) {
@@ -442,11 +537,6 @@
 	return [...positive, ...rejected.map((reason) => `- ${reason}`), ...explanations];
   }
 
-  function slugify(value) {
-    return String(value || '')
-      .toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '');
-  }
-
   function hasDifferentSeriesTitle(candidate) {
     const details = [candidate?.reject_reasons, candidate?.reasons, candidate?.explanations]
       .flatMap((value) => Array.isArray(value) ? value : [value])
@@ -454,11 +544,10 @@
     return details.includes('different series title');
   }
 
-  function outputExample(root, folder, organizeBySeason, season = 1) {
-    const normalizedFolder = slugify(folder || selectedShow?.name || draft.display_name) || 'series';
-    const pieces = [String(root || '').replace(/\/+$/, ''), normalizedFolder];
+  function outputExample(root, _folder, organizeBySeason, season = 1) {
+    const pieces = [String(root || '').replace(/\/+$/, '')];
     if (organizeBySeason) pieces.push(`s${String(season).padStart(2, '0')}`);
-    return pieces.filter(Boolean).join('/') || 'Choose a library root';
+    return pieces.filter(Boolean).join('/') || 'Choose the series folder';
   }
 
   function stopRefreshTimer() {
@@ -475,6 +564,9 @@
   }
 
   $: watcherModalOpen = showWizard || Boolean(editing) || browserOpen || Boolean(attentionWatch);
+  $: activeWatchCount = watches.filter((watch) => watch.enabled).length;
+  $: attentionCount = watches.reduce((total, watch) => total + watch.attention_count, 0);
+  $: scheduledCount = watches.filter((watch) => Boolean(watch.next_episode || watch.next_episode_at)).length;
   $: visibleCandidates = candidates.filter((candidate) => !hasDifferentSeriesTitle(candidate));
   $: if (mounted) {
     if (watcherModalOpen || !active) stopRefreshTimer();
@@ -499,64 +591,83 @@
   });
 </script>
 
-<section class="panel series-section" aria-labelledby="series-heading">
-  <div class="series-section-header">
-    <div>
-      <p class="eyebrow">Automation</p>
-      <h2 id="series-heading">Series</h2>
-      <p class="muted">Keep future episodes matched to a trusted Webshare release profile.</p>
-    </div>
-    <div class="actions">
-      <button class="btn ghost" type="button" on:click={refresh} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</button>
-      <button class="btn primary" type="button" on:click={openWizard}>Add series</button>
-    </div>
+<section class="series-section" aria-labelledby="series-heading">
+  <div class="stats automation-stats" aria-label="Automation overview">
+    <div class="stat stat-active"><span>Active</span><strong>{activeWatchCount}</strong></div>
+    <div class="stat stat-eta"><span>Episodes on deck</span><strong>{scheduledCount}</strong></div>
+    <div class="stat" class:stat-failed={attentionCount > 0}><span>Warnings</span><strong>{attentionCount}</strong></div>
   </div>
 
-  {#if loadError}<div class="series-alert error">{loadError}</div>{/if}
-  {#if actionError}<div class="series-alert error">{actionError}</div>{/if}
+  <div class="panel automation-panel">
+    <div class="table-toolbar automation-toolbar">
+      <div>
+        <h2 id="series-heading">Automations</h2>
+        <p class="muted">New series are first checked two hours after airtime.</p>
+      </div>
+      <div class="actions">
+        <button class="btn ghost" type="button" on:click={refresh} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</button>
+        <button class="btn primary" type="button" on:click={openWizard}>Add series</button>
+      </div>
+    </div>
 
-  {#if watches.length === 0 && !loading}
-    <div class="series-empty">
-      <div class="series-empty-icon">✦</div>
-      <h3>No series watched yet</h3>
-      <p>Use a real Webshare episode as a profile, then choose the exact TVmaze show.</p>
-      <button class="btn primary" type="button" on:click={openWizard}>Create your first watcher</button>
-    </div>
-  {:else}
-    <div class="series-list">
-      {#each watches as watch (watch.id)}
-        <article class="series-card" class:series-card-paused={!watch.enabled}>
-          <div class="series-card-main">
-            <div class="series-title-row">
-              <h3>{watch.display_name}</h3>
-              <span class="series-status" data-status={watch.status}>{watch.enabled ? (watch.status || 'active') : 'paused'}</span>
-              {#if watch.attention_count > 0}<span class="series-status attention">{watch.attention_count} attention</span>{/if}
-            </div>
-            <p class="series-subtitle">{watch.search_title || watch.display_name} · {watch.out_dir || 'No output folder'}</p>
-            <div class="series-facts">
-              <div><span>Next episode</span><strong>{episodeLabel(watch.next_episode)}</strong><small>{formatDate(watch.next_episode?.air_timestamp || watch.next_episode_at)}</small></div>
-              <div><span>Last check</span><strong>{formatDate(watch.last_checked_at)}</strong><small>Next: {formatDate(watch.next_check_at)}</small></div>
-              <div><span>Profile</span><strong>{prettyPolicy(watch.fallback_policy)}</strong><small>{watch.reference_filename || 'Reference profile'}</small></div>
-            </div>
-            {#if watch.last_error}<p class="series-last-error">{watch.last_error}</p>{/if}
-          </div>
-          <div class="series-card-actions">
-            {#if watch.attention_count > 0}<button class="btn tiny attention-action" type="button" on:click={() => openAttention(watch)}>{`Review attention (${watch.attention_count})`}</button>{/if}
-            <button class="btn tiny" type="button" on:click={() => doAction(watch, 'check-now')} disabled={!watch.enabled || busyAction === `${watch.id}:check-now`}>{busyAction === `${watch.id}:check-now` ? 'Checking…' : 'Check now'}</button>
-            <button class="btn tiny ghost" type="button" on:click={() => doAction(watch, watch.enabled ? 'pause' : 'resume')} disabled={busyAction === `${watch.id}:${watch.enabled ? 'pause' : 'resume'}`}>{watch.enabled ? 'Pause' : 'Resume'}</button>
-            <button class="btn tiny ghost" type="button" on:click={() => startEdit(watch)}>Edit</button>
-            <button class="btn tiny danger" type="button" on:click={() => doAction(watch, 'remove')} disabled={busyAction === `${watch.id}:remove`}>Remove</button>
-          </div>
-        </article>
-      {/each}
-    </div>
-  {/if}
+    {#if loadError}<div class="series-alert error" role="alert">{loadError}</div>{/if}
+    {#if actionError}<div class="series-alert error" role="alert">{actionError}</div>{/if}
+
+    {#if watches.length === 0 && !loading}
+      <div class="series-empty">
+        <div class="series-empty-icon">✦</div>
+        <h3>No series watched yet</h3>
+        <p>Use a real Webshare episode as a profile, then choose the exact TVmaze show.</p>
+        <button class="btn primary" type="button" on:click={openWizard}>Create your first watcher</button>
+      </div>
+    {:else}
+      <div class="table-wrap">
+        <table class="table automation-table">
+          <colgroup><col class="automation-col-status" /><col class="automation-col-series" /><col class="automation-col-next" /><col class="automation-col-path" /><col class="automation-col-actions" /></colgroup>
+          <thead><tr><th>Status</th><th>Series</th><th>Next episode</th><th>Download path</th><th class="actions-col">Actions</th></tr></thead>
+          <tbody>
+            {#each watches as watch (watch.id)}
+              <tr data-status={watch.status} class:automation-row-paused={!watch.enabled}>
+                <td class="cell-status" data-label="Status">
+                  <span class="status" data-status={watch.status}>{watch.enabled ? (watch.status === 'needs_attention' ? 'warning' : watch.status || 'active') : 'paused'}</span>
+                  <small class="automation-last-check">Checked {formatDate(watch.last_checked_at)}</small>
+                </td>
+                <td class="cell-name automation-series-cell" data-label="Series">
+                  <strong>{watch.display_name}</strong>
+                  <small>{prettyPolicy(watch.fallback_policy)} policy</small>
+                </td>
+                <td class="automation-next-cell" data-label="Next episode">
+                  <div class="automation-episode-line"><strong>{episodeCode(watch.next_episode)}</strong><span>{episodeTitle(watch.next_episode)}</span></div>
+                  <time datetime={nextEpisodeTime(watch) || undefined}>{formatDate(nextEpisodeTime(watch))}</time>
+                  {#if watch.attention_count > 0}<div class="automation-warning">Release not found after four searches for {watch.attention_count} {watch.attention_count === 1 ? 'episode' : 'episodes'}. {watch.fallback_policy === 'manual' ? 'Review the saved alternatives.' : 'Retry to start a fresh search cycle.'}</div>{/if}
+                  {#if watch.last_error}<div class="automation-warning">{watch.last_error}</div>{/if}
+                </td>
+                <td class="cell-path automation-path-cell" data-label="Download path" title={watch.out_dir || 'No output folder'}>{watch.out_dir || 'No output folder'}</td>
+                <td class="actions-col" data-label="Actions">
+                  <div class="actions row-actions automation-actions">
+                    {#if watch.attention_count > 0 && watch.fallback_policy === 'manual'}
+                      <button class="btn icon-btn action-btn action-stop" type="button" title={`Review ${watch.attention_count} warning${watch.attention_count === 1 ? '' : 's'}`} aria-label={`Review warnings for ${watch.display_name}`} on:click={() => openAttention(watch)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 1 21h22L12 2zm-1 6h2v7h-2zm0 9h2v2h-2z" /></svg></button>
+                    {/if}
+                    <button class="btn icon-btn action-btn action-retry" type="button" title={busyAction === `${watch.id}:check-now` ? 'Checking…' : watch.attention_count > 0 && watch.fallback_policy !== 'manual' ? 'Retry search cycle' : 'Check now'} aria-label={watch.attention_count > 0 && watch.fallback_policy !== 'manual' ? `Retry searches for ${watch.display_name}` : `Check ${watch.display_name} now`} on:click={() => doAction(watch, 'check-now')} disabled={!watch.enabled || busyAction === `${watch.id}:check-now`}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.7 6.3A8 8 0 1 0 20 12h-2a6 6 0 1 1-1.8-4.3L13 11h8V3z" /></svg></button>
+                    <button class="btn icon-btn action-btn" class:action-pause={watch.enabled} class:action-resume={!watch.enabled} type="button" title={watch.enabled ? 'Pause' : 'Resume'} aria-label={`${watch.enabled ? 'Pause' : 'Resume'} ${watch.display_name}`} on:click={() => doAction(watch, watch.enabled ? 'pause' : 'resume')} disabled={busyAction === `${watch.id}:${watch.enabled ? 'pause' : 'resume'}`}><svg viewBox="0 0 24 24" aria-hidden="true">{#if watch.enabled}<path d="M7 5h4v14H7zm6 0h4v14h-4z" />{:else}<path d="M8 5v14l11-7z" />{/if}</svg></button>
+                    <button class="btn icon-btn action-btn action-logs" type="button" title="Edit" aria-label={`Edit ${watch.display_name}`} on:click={() => startEdit(watch)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 16.5-.5 4 4-.5L19 8.5 15.5 5zM17 3l4 4-1.5 1.5-4-4z" /></svg></button>
+                    <button class="btn icon-btn action-btn action-remove" type="button" title="Remove" aria-label={`Remove ${watch.display_name}`} on:click={() => doAction(watch, 'remove')} disabled={busyAction === `${watch.id}:remove`}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10l-1 13H8zm2-3h6l1 2h4v2H4V6h4z" /></svg></button>
+                  </div>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </div>
 </section>
 
 <SeriesWizard
   show={showWizard}
   {stepLabels}
   bind:wizardStep
+  bind:wizardFurthestStep
   {wizardBusy}
   {wizardError}
   {wizardNotice}
@@ -574,6 +685,8 @@
   onClose={closeWizard}
   onNext={stepForward}
   onBack={stepBack}
+  onGoToStep={goToWizardStep}
+  onInvalidateFrom={invalidateWizardFrom}
   onActivate={activate}
   onFindShows={findShows}
   onChooseShow={chooseShow}
@@ -603,6 +716,7 @@
   watch={editing}
   bind:draft={editDraft}
   saving={busyAction === `${editing?.id}:edit`}
+  error={editError}
   onClose={() => (editing = null)}
   onSave={saveEdit}
   onOpenBrowser={() => openBrowser('edit')}

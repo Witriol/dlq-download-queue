@@ -136,7 +136,7 @@ func TestManagerFallbackPolicies(t *testing.T) {
 	}{
 		{policy: FallbackStrict, wantCalls: 0, wantState: StatePreferredNotFound},
 		{policy: FallbackBalanced, wantCalls: 1, wantState: StateQueued},
-		{policy: FallbackManual, wantCalls: 0, wantState: StateNeedsAttention},
+		{policy: FallbackManual, wantCalls: 0, wantState: StatePreferredNotFound},
 	}
 	for _, test := range tests {
 		t.Run(test.policy, func(t *testing.T) {
@@ -152,6 +152,175 @@ func TestManagerFallbackPolicies(t *testing.T) {
 				t.Fatalf("calls = %d, state = %q; want %d, %q", queue.calls, episodes[0].State, test.wantCalls, test.wantState)
 			}
 		})
+	}
+}
+
+func TestManagerStopsAfterFourReleaseSearchesAndWarns(t *testing.T) {
+	manager, store, _, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-Other.mkv", 0)
+	ctx := context.Background()
+	start := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+
+	for attempt := 1; attempt <= MaxReleaseSearches; attempt++ {
+		now := start.Add(time.Duration(attempt-1) * ReleaseRetryDelay)
+		manager.Now = func() time.Time { return now }
+		if err := manager.processWatch(ctx, watchID); err != nil {
+			t.Fatal(err)
+		}
+		episodes, err := store.ListEpisodes(ctx, watchID)
+		if err != nil || len(episodes) != 1 {
+			t.Fatalf("episodes = %#v, err = %v", episodes, err)
+		}
+		if episodes[0].SearchAttempts != attempt {
+			t.Fatalf("attempt %d persisted search_attempts = %d", attempt, episodes[0].SearchAttempts)
+		}
+		if attempt < MaxReleaseSearches {
+			watch, err := store.GetWatch(ctx, watchID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			next, ok := parseNullTime(watch.NextCheckAt)
+			if !ok || !next.Equal(now.Add(ReleaseRetryDelay)) {
+				t.Fatalf("attempt %d next check = %v; want %v", attempt, next, now.Add(ReleaseRetryDelay))
+			}
+		} else if episodes[0].State != StateNeedsAttention {
+			t.Fatalf("final state = %q; want %q", episodes[0].State, StateNeedsAttention)
+		}
+	}
+
+	// A later scheduler pass leaves the exhausted episode alone.
+	manager.Now = func() time.Time { return start.Add(24 * time.Hour) }
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	episodes, err := store.ListEpisodes(ctx, watchID)
+	if err != nil || episodes[0].SearchAttempts != MaxReleaseSearches {
+		t.Fatalf("exhausted episode was searched again: episodes=%+v err=%v", episodes, err)
+	}
+	view, err := manager.Get(ctx, watchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.AttentionCount != 1 || view.Status != StateNeedsAttention {
+		t.Fatalf("warning view = %+v", view)
+	}
+}
+
+func TestManagerBalancedFallbackUsesFinalBoundedSearchAtPreferredWait(t *testing.T) {
+	manager, store, queue, watchID := newManagerFixture(t, FallbackBalanced, "Some.Show.S01E02.1080p.WEB-DL.x265-Other.mkv", 0)
+	ctx := context.Background()
+	start := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	number := 2
+	air := start.Add(-DefaultReleaseDelay)
+	manager.TVMaze = &fakeTVMaze{episodes: []TVMazeEpisode{{ID: 1002, Name: "Second", Season: 1, Number: &number, Airstamp: &air}}}
+	watch, err := store.GetWatch(ctx, watchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	watch.ReleaseDelaySeconds = int64(DefaultReleaseDelay / time.Second)
+	watch.PreferredWaitSeconds = int64(DefaultPreferredWait / time.Second)
+	if err := store.UpdateWatch(ctx, watch); err != nil {
+		t.Fatal(err)
+	}
+
+	// The first three bounded checks retain the preferred-quality wait. The
+	// final check is scheduled at its expiry rather than exhausting the cycle
+	// eight hours after airtime.
+	for attempt := 1; attempt <= MaxReleaseSearches-1; attempt++ {
+		now := start.Add(time.Duration(attempt-1) * ReleaseRetryDelay)
+		manager.Now = func() time.Time { return now }
+		if err := manager.processWatch(ctx, watchID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	updated, err := store.GetWatch(ctx, watchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, ok := parseNullTime(updated.NextCheckAt)
+	wantFallbackCheck := start.Add(DefaultPreferredWait)
+	if !ok || !next.Equal(wantFallbackCheck) {
+		t.Fatalf("balanced fallback check = %v; want %v", next, wantFallbackCheck)
+	}
+
+	manager.Now = func() time.Time { return wantFallbackCheck }
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	episodes, err := store.ListEpisodes(ctx, watchID)
+	if err != nil || len(episodes) != 1 {
+		t.Fatalf("episodes = %#v, err = %v", episodes, err)
+	}
+	if queue.calls != 1 || episodes[0].State != StateQueued {
+		t.Fatalf("balanced fallback did not queue alternative: calls=%d episode=%+v", queue.calls, episodes[0])
+	}
+}
+
+func TestManagerCheckNowResetsExhaustedAutomaticEpisode(t *testing.T) {
+	manager, store, _, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-Other.mkv", 0)
+	ctx := context.Background()
+	for range MaxReleaseSearches {
+		if err := manager.processWatch(ctx, watchID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := store.ListEpisodes(ctx, watchID)
+	if err != nil || len(before) != 1 || before[0].State != StateNeedsAttention {
+		t.Fatalf("episode before recovery = %#v, err = %v", before, err)
+	}
+	if _, err := manager.CheckNow(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	after, err := store.ListEpisodes(ctx, watchID)
+	if err != nil || len(after) != 1 {
+		t.Fatalf("episodes after recovery = %#v, err = %v", after, err)
+	}
+	if after[0].State != StatePreferredNotFound || after[0].SearchAttempts != 1 {
+		t.Fatalf("manual recovery did not begin a fresh cycle: %+v", after[0])
+	}
+}
+
+func TestManagerUpdateResetsExhaustedAutomaticEpisode(t *testing.T) {
+	manager, store, _, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-Other.mkv", 0)
+	ctx := context.Background()
+	for range MaxReleaseSearches {
+		if err := manager.processWatch(ctx, watchID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	updatedTitle := "Some Show (2026)"
+	if _, err := manager.Update(ctx, watchID, UpdateRequest{SearchTitle: &updatedTitle}); err != nil {
+		t.Fatal(err)
+	}
+	episodes, err := store.ListEpisodes(ctx, watchID)
+	if err != nil || len(episodes) != 1 {
+		t.Fatalf("episodes after update = %#v, err = %v", episodes, err)
+	}
+	if episodes[0].State != StateScheduled || episodes[0].SearchAttempts != 0 || episodes[0].AttentionCandidatesJSON.Valid {
+		t.Fatalf("settings update did not reset exhausted episode: %+v", episodes[0])
+	}
+}
+
+func TestManagerCheckNowPreservesManualAttentionReview(t *testing.T) {
+	manager, store, _, watchID := newManagerFixture(t, FallbackManual, "Some.Show.S01E02.1080p.WEB-DL.x265-Other.mkv", 0)
+	ctx := context.Background()
+	for range MaxReleaseSearches {
+		if err := manager.processWatch(ctx, watchID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := store.ListEpisodes(ctx, watchID)
+	if err != nil || len(before) != 1 || !before[0].AttentionCandidatesJSON.Valid {
+		t.Fatalf("manual episode before check now = %#v, err = %v", before, err)
+	}
+	if _, err := manager.CheckNow(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	after, err := store.ListEpisodes(ctx, watchID)
+	if err != nil || len(after) != 1 {
+		t.Fatalf("manual episode after check now = %#v, err = %v", after, err)
+	}
+	if after[0].State != StateNeedsAttention || after[0].SearchAttempts != MaxReleaseSearches || after[0].AttentionCandidatesJSON != before[0].AttentionCandidatesJSON {
+		t.Fatalf("Check now disturbed manual review: before=%+v after=%+v", before[0], after[0])
 	}
 }
 
@@ -221,13 +390,13 @@ func TestValidateOutDirUsesPathBoundary(t *testing.T) {
 	}
 }
 
-func TestQueueSelectionUsesSeriesSeasonDirectory(t *testing.T) {
+func TestQueueSelectionUsesSelectedSeriesDirectory(t *testing.T) {
 	store, conn := newSeriesStore(t)
 	ctx := context.Background()
 	watch := &Watch{
 		Enabled: true, TVMazeID: 1, DisplayName: "Futurama", SearchTitle: "Futurama",
 		ReferenceWebshareIdent: "reference", ReferenceFilename: "Futurama.S14E01.mkv",
-		OutDir: "/tvshows", SeriesFolder: "futurama", OrganizeBySeason: true,
+		OutDir: "/tvshows/futurama", SeriesFolder: "", OrganizeBySeason: true,
 	}
 	watchID, err := store.CreateWatch(ctx, watch)
 	if err != nil {
@@ -257,21 +426,23 @@ func TestQueueSelectionUsesSeriesSeasonDirectory(t *testing.T) {
 func TestSeriesFolderRejectsTraversal(t *testing.T) {
 	for _, folder := range []string{"../private", "shows/futurama", `shows\\futurama`, "/private", ".", ".."} {
 		t.Run(folder, func(t *testing.T) {
-			if _, err := normalizeSeriesFolder(folder, "Futurama"); err == nil {
+			if _, err := normalizeSeriesFolder(folder); err == nil {
 				t.Fatalf("series_folder %q was accepted", folder)
 			}
 		})
 	}
-	if folder, err := normalizeSeriesFolder("", "Futurama: The Movie"); err != nil || folder != "futurama-the-movie" {
-		t.Fatalf("derived folder = %q, err = %v", folder, err)
+	if _, err := normalizeSeriesFolder(""); err == nil {
+		t.Fatal("empty legacy series_folder was accepted")
 	}
 }
 
 func TestManagerManualAttentionSelectionUsesPersistedCandidate(t *testing.T) {
 	manager, store, queue, watchID := newManagerFixture(t, FallbackManual, "Some.Show.S01E02.1080p.WEB-DL.x265-Other.mkv", 0)
 	ctx := context.Background()
-	if err := manager.processWatch(ctx, watchID); err != nil {
-		t.Fatal(err)
+	for range MaxReleaseSearches {
+		if err := manager.processWatch(ctx, watchID); err != nil {
+			t.Fatal(err)
+		}
 	}
 	attention, err := manager.ListAttention(ctx, watchID)
 	if err != nil || len(attention) != 1 || len(attention[0].Candidates) != 1 {
@@ -307,8 +478,10 @@ func TestManagerManualAttentionSelectionUsesPersistedCandidate(t *testing.T) {
 func TestManagerRejectsMalformedAttentionSnapshot(t *testing.T) {
 	manager, store, _, watchID := newManagerFixture(t, FallbackManual, "Some.Show.S01E02.1080p.WEB-DL.x265-Other.mkv", 0)
 	ctx := context.Background()
-	if err := manager.processWatch(ctx, watchID); err != nil {
-		t.Fatal(err)
+	for range MaxReleaseSearches {
+		if err := manager.processWatch(ctx, watchID); err != nil {
+			t.Fatal(err)
+		}
 	}
 	episodes, err := store.ListEpisodes(ctx, watchID)
 	if err != nil || len(episodes) != 1 {
@@ -377,6 +550,88 @@ func TestManagerCreateUsesDefaultsOnlyWhenDelaysAreOmitted(t *testing.T) {
 		if !errors.As(err, &validation) {
 			t.Fatalf("negative delay error = %T %v, want ValidationError", err, err)
 		}
+	}
+}
+
+func TestManagerSchedulesKnownEpisodeAtReleaseTime(t *testing.T) {
+	manager, store, _, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-MeGusta.mkv", 0)
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	air := now.Add(12 * time.Hour)
+	number := 2
+	manager.TVMaze = &fakeTVMaze{episodes: []TVMazeEpisode{{ID: 1002, Name: "Second", Season: 1, Number: &number, Airstamp: &air}}}
+
+	if err := manager.processWatch(context.Background(), watchID); err != nil {
+		t.Fatal(err)
+	}
+	watch, err := store.GetWatch(context.Background(), watchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := air.Add(time.Second)
+	got, ok := parseNullTime(watch.NextCheckAt)
+	if !ok || !got.Equal(want) {
+		t.Fatalf("next check = %v; want release search time %v", got, want)
+	}
+}
+
+func TestManagerRefreshesMetadataDailyForDistantEpisode(t *testing.T) {
+	manager, store, _, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-MeGusta.mkv", 0)
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	air := now.Add(8 * 24 * time.Hour)
+	number := 2
+	manager.TVMaze = &fakeTVMaze{episodes: []TVMazeEpisode{{ID: 1002, Name: "Second", Season: 1, Number: &number, Airstamp: &air}}}
+	if err := manager.processWatch(context.Background(), watchID); err != nil {
+		t.Fatal(err)
+	}
+	watch, err := store.GetWatch(context.Background(), watchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := parseNullTime(watch.NextCheckAt)
+	if want := now.Add(24 * time.Hour); !ok || !got.Equal(want) {
+		t.Fatalf("next metadata refresh = %v; want %v", got, want)
+	}
+}
+
+func TestManagerUpdateReschedulesWithoutClearingLastCheck(t *testing.T) {
+	manager, store, _, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-MeGusta.mkv", 0)
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	last := now.Add(-time.Hour)
+	next := now.Add(7 * 24 * time.Hour)
+	if err := store.UpdateWatchCheck(context.Background(), watchID, &last, &next, ""); err != nil {
+		t.Fatal(err)
+	}
+	zero := int64(0)
+	if _, err := manager.Update(context.Background(), watchID, UpdateRequest{ReleaseDelaySeconds: &zero}); err != nil {
+		t.Fatal(err)
+	}
+	watch, err := store.GetWatch(context.Background(), watchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotNext, nextOK := parseNullTime(watch.NextCheckAt)
+	gotLast, lastOK := parseNullTime(watch.LastCheckedAt)
+	if !nextOK || !gotNext.Equal(now) {
+		t.Fatalf("next check = %v; want %v", gotNext, now)
+	}
+	if !lastOK || !gotLast.Equal(last) {
+		t.Fatalf("last check = %v; want preserved %v", gotLast, last)
+	}
+}
+
+func TestManagerUpdateDoesNotAppendDeprecatedSeriesFolder(t *testing.T) {
+	manager, store, _, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-MeGusta.mkv", 0)
+	outDir := "/data/tv/some-show"
+	legacyFolder := "some-show"
+	if _, err := manager.Update(context.Background(), watchID, UpdateRequest{OutDir: &outDir, SeriesFolder: &legacyFolder}); err != nil {
+		t.Fatal(err)
+	}
+	watch, err := store.GetWatch(context.Background(), watchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if watch.OutDir != outDir || watch.SeriesFolder != "" {
+		t.Fatalf("updated path = %q + %q; want exact %q", watch.OutDir, watch.SeriesFolder, outDir)
 	}
 }
 

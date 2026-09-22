@@ -33,8 +33,10 @@ const (
 )
 
 const (
-	DefaultReleaseDelay  = 6 * time.Hour
+	DefaultReleaseDelay  = 2 * time.Hour
 	DefaultPreferredWait = 24 * time.Hour
+	ReleaseRetryDelay    = 2 * time.Hour
+	MaxReleaseSearches   = 4
 )
 
 // ValidationError marks a request as invalid without relying on error text at
@@ -96,6 +98,7 @@ type Episode struct {
 	ChosenFilename          sql.NullString
 	SelectionSnapshotJSON   sql.NullString
 	AttentionCandidatesJSON sql.NullString
+	SearchAttempts          int
 	JobID                   sql.NullInt64
 	CreatedAt               string
 	UpdatedAt               string

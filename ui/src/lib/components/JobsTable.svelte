@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { fileName, folderPath, formatETA, formatProgress, formatSpeed, retryIn } from '$lib/format';
+  import { fileName, folderPath, formatDateTime, formatETA, formatProgress, formatSpeed, retryIn } from '$lib/format';
   import { displayStatus, displayStatusFilter, isWebshareJob } from '$lib/status';
 
   export let jobs = [];
@@ -322,7 +322,10 @@
                 class:row-group-child-last={inGroup && row.isGroupLast}
               >
                 <td class="cell-id" data-label="ID">{job.id}</td>
-                <td class="cell-status" data-label="Status"><span class="status" data-status={job.status}>{displayStatus(job)}</span></td>
+                <td class="cell-status" data-label="Status">
+                  <span class="status" data-status={job.status}>{displayStatus(job)}</span>
+                  {#if job.status !== 'downloading'}<small class="status-changed-at">{formatDateTime(job.status_changed_at)}</small>{/if}
+                </td>
                 <td class="cell-name" data-label="Name">{fileName(job)}</td>
                 <td class="cell-progress" data-label="Progress">
                   <span class="metric-badge metric-progress">{progress}</span>

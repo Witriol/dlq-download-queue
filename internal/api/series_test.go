@@ -61,7 +61,7 @@ func TestSeriesPreviewAndCreateEndpoints(t *testing.T) {
 	if err := json.Unmarshal(created.Body.Bytes(), &watch); err != nil {
 		t.Fatal(err)
 	}
-	if watch.ID <= 0 || watch.DisplayName != "Some Show" || watch.OutDir != "/data/tv" || watch.SeriesFolder != "some-show" || !watch.OrganizeBySeason {
+	if watch.ID <= 0 || watch.DisplayName != "Some Show" || watch.OutDir != "/data/tv" || watch.SeriesFolder != "" || !watch.OrganizeBySeason {
 		t.Fatalf("unexpected created watch: %+v", watch)
 	}
 

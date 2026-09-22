@@ -30,6 +30,7 @@ export type JobView = {
   archive_is_multipart?: boolean;
   created_at: string;
   updated_at: string;
+  status_changed_at?: string;
 };
 
 export type BatchResult = {
@@ -83,6 +84,7 @@ export type SeriesEpisode = {
   air_timestamp?: string;
   state?: string;
   chosen_filename?: string;
+  search_attempts?: number;
   job_id?: number;
 };
 

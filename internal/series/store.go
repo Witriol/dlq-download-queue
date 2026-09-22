@@ -49,11 +49,11 @@ func (s *Store) CreateWatch(ctx context.Context, w *Watch) (int64, error) {
 	res, err := s.db.ExecContext(ctx, `
 INSERT INTO series_watches (
   enabled, tvmaze_id, display_name, search_title, reference_webshare_ident,
-  reference_filename, out_dir, series_folder, organize_by_season,
+  reference_filename, out_dir, series_folder, output_path_version, organize_by_season,
   quality_profile_json, start_mode, start_season,
   start_episode, fallback_policy, release_delay_seconds, preferred_wait_seconds,
   next_check_at, last_checked_at, last_error, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 2, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `, boolInt(enabled), w.TVMazeID, w.DisplayName, w.SearchTitle,
 		w.ReferenceWebshareIdent, w.ReferenceFilename, w.OutDir, w.SeriesFolder,
 		boolInt(w.OrganizeBySeason), quality, startMode,
@@ -136,6 +136,17 @@ func (s *Store) UpdateWatchCheck(ctx context.Context, id int64, lastCheckedAt, n
 	res, err := s.db.ExecContext(ctx, `
 UPDATE series_watches SET last_checked_at = ?, next_check_at = ?, last_error = ?, updated_at = ? WHERE id = ?
 `, last, next, errValue, now, id)
+	if err != nil {
+		return err
+	}
+	return requireAffected(res)
+}
+
+// ScheduleWatchCheck updates only the due time, preserving the last completed
+// check and its diagnostic state.
+func (s *Store) ScheduleWatchCheck(ctx context.Context, id int64, next time.Time) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE series_watches SET next_check_at = ?, updated_at = ? WHERE id = ?`,
+		next.UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano), id)
 	if err != nil {
 		return err
 	}
@@ -256,6 +267,23 @@ func (s *Store) SetEpisodeState(ctx context.Context, id int64, state string) err
 	return requireAffected(res)
 }
 
+// IncrementEpisodeSearchAttempts durably records an unsuccessful release
+// search so restarts cannot reset the bounded retry lifecycle.
+func (s *Store) IncrementEpisodeSearchAttempts(ctx context.Context, id int64) (int, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE series_episodes SET search_attempts = search_attempts + 1, updated_at = ? WHERE id = ? AND job_id IS NULL`, time.Now().UTC().Format(time.RFC3339Nano), id)
+	if err != nil {
+		return 0, err
+	}
+	if err := requireAffected(res); err != nil {
+		return 0, err
+	}
+	var attempts int
+	if err := s.db.QueryRowContext(ctx, `SELECT search_attempts FROM series_episodes WHERE id = ?`, id).Scan(&attempts); err != nil {
+		return 0, err
+	}
+	return attempts, nil
+}
+
 // SetEpisodeAttention stores the current accepted alternatives alongside an
 // attention state. Candidates are a server-generated snapshot, never request
 // input, so later manual selection can be validated without trusting a URL or
@@ -273,6 +301,25 @@ WHERE id = ? AND job_id IS NULL
 		return err
 	}
 	return requireAffected(res)
+}
+
+// ResetExhaustedEpisodes makes automatically managed episodes eligible for a
+// fresh release-search lifecycle. It deliberately refuses to touch a durable
+// selection or queue job; those records are the idempotency boundary for a
+// download already chosen by the user or scheduler.
+func (s *Store) ResetExhaustedEpisodes(ctx context.Context, watchID int64) (int64, error) {
+	if watchID <= 0 {
+		return 0, errors.New("watch_id is required")
+	}
+	res, err := s.db.ExecContext(ctx, `
+UPDATE series_episodes
+SET state = ?, search_attempts = 0, attention_candidates_json = NULL, updated_at = ?
+WHERE watch_id = ? AND state = ? AND job_id IS NULL AND chosen_webshare_ident IS NULL
+`, StateScheduled, time.Now().UTC().Format(time.RFC3339Nano), watchID, StateNeedsAttention)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // SetEpisodeSelection records the stable Webshare identity chosen by the
@@ -412,7 +459,7 @@ const watchSelect = `SELECT id, enabled, tvmaze_id, display_name, search_title,
 
 const episodeSelect = `SELECT id, watch_id, tvmaze_episode_id, season, episode,
  episode_name, air_timestamp, state, chosen_webshare_ident, chosen_filename,
- selection_snapshot_json, attention_candidates_json, job_id, created_at, updated_at FROM series_episodes`
+ selection_snapshot_json, attention_candidates_json, search_attempts, job_id, created_at, updated_at FROM series_episodes`
 
 type scanner interface{ Scan(...any) error }
 
@@ -447,7 +494,7 @@ func scanEpisode(row scanner) (Episode, error) {
 	err := row.Scan(&e.ID, &e.WatchID, &e.TVMazeEpisodeID, &e.Season, &e.Episode,
 		&e.EpisodeName, &e.AirTimestamp, &e.State, &e.ChosenWebshareIdent,
 		&e.ChosenFilename, &e.SelectionSnapshotJSON, &e.AttentionCandidatesJSON,
-		&e.JobID, &e.CreatedAt, &e.UpdatedAt)
+		&e.SearchAttempts, &e.JobID, &e.CreatedAt, &e.UpdatedAt)
 	return e, err
 }
 

@@ -96,6 +96,21 @@ export function retryIn(nextRetryAt: string | undefined): string {
   return ` · retry in ${humanDuration(seconds)}`;
 }
 
+export function formatDateTime(value: string | undefined | null): string {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString('cs-CZ', {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  });
+}
+
 export function shortURL(url: string): string {
   if (!url) return '';
   if (url.length <= 64) return url;

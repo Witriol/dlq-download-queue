@@ -354,9 +354,27 @@
     showBrowser = false;
   }
 
-  function selectTab(tab, focus = false) {
-    if (watcherModalOpen && tab !== activeTab) return;
+  function tabFromURL() {
+    if (typeof window === 'undefined') return 'queue';
+    return new URL(window.location.href).searchParams.get('tab') === 'automations' ? 'automations' : 'queue';
+  }
+
+  function writeTabToURL(tab, replace = false) {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    url.searchParams.set('tab', tab);
+    window.history[replace ? 'replaceState' : 'pushState']({}, '', url);
+  }
+
+  function selectTab(tab, focus = false, updateURL = true) {
+    if (tab !== 'queue' && tab !== 'automations') return;
+    // Keep the tab controls locked while a watcher dialog is open, but still
+    // honour browser back/forward navigation. The popstate handler passes
+    // updateURL=false, so navigation cannot be stranded behind a modal.
+    if (watcherModalOpen && tab !== activeTab && updateURL) return;
+    const changed = activeTab !== tab;
     activeTab = tab;
+    if (updateURL && changed) writeTabToURL(tab);
     if (tab === 'queue') refresh();
     if (focus && typeof document !== 'undefined') {
       requestAnimationFrame(() => document.getElementById(`${tab}-tab`)?.focus());
@@ -410,18 +428,23 @@
   $: syncBodyScrollLock(pageModalOpen);
 
   onMount(() => {
+    activeTab = tabFromURL();
+    writeTabToURL(activeTab, true);
+    const handlePopState = () => selectTab(tabFromURL(), false, false);
+    window.addEventListener('popstate', handlePopState);
     refresh();
     loadMeta();
     loadOutDirFavorites();
     return () => {
       stopTimer();
       stopLogsTimer();
+      window.removeEventListener('popstate', handlePopState);
       syncBodyScrollLock(false);
     };
   });
 </script>
 
-<div class="page">
+<main class="page">
   <header class="header">
     <div class="header-main">
       <div class="brand">
@@ -437,7 +460,7 @@
         <button class:active={activeTab === 'automations'} role="tab" aria-selected={activeTab === 'automations'} aria-controls="automations-panel" id="automations-tab" tabindex={activeTab === 'automations' ? 0 : -1} type="button" disabled={watcherModalOpen} on:click={() => selectTab('automations')} on:keydown={handleTabKey}>Automations</button>
       </div>
       {#if lastError}
-        <span class="badge badge-error" title={lastError}>Error: {lastError}</span>
+        <span class="badge badge-error" role="alert" title={lastError}>Error: {lastError}</span>
       {/if}
     </div>
     <div class="toolbar">
@@ -476,9 +499,11 @@
       />
   </div>
   <div id="automations-panel" role="tabpanel" aria-labelledby="automations-tab" hidden={activeTab !== 'automations'}>
-    <SeriesSection {outDirPresets} {outDirFavorites} active={activeTab === 'automations'} onAddFavorite={addOutDirFavorite} onRemoveFavorite={removeOutDirFavorite} onModalOpenChange={(open) => (watcherModalOpen = open)} onChanged={refresh} />
+    {#if activeTab === 'automations'}
+      <SeriesSection {outDirPresets} {outDirFavorites} active={activeTab === 'automations'} onAddFavorite={addOutDirFavorite} onRemoveFavorite={removeOutDirFavorite} onModalOpenChange={(open) => (watcherModalOpen = open)} onChanged={refresh} />
+    {/if}
   </div>
-</div>
+</main>
 
 {#if activeTab === 'queue'}
   <button class="fab" on:click={() => (showAdd = true)} aria-label="Add jobs">
