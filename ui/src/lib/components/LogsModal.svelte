@@ -1,9 +1,9 @@
 <script>
-  import { displayStatus } from '$lib/status';
   import { formatDateTime } from '$lib/format';
 
   export let show = false;
-  export let logsJob = null;
+  export let title = 'Job Events';
+  export let subtitle = '';
   export let logsEvents = [];
   export let logsLimit = 50;
   export let logsAutoRefresh = true;
@@ -13,8 +13,6 @@
 
   export let onClose = () => {};
   export let onRefresh = () => {};
-
-  const localTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local';
 
   function onBackdropKeydown(event) {
     if (event.key === 'Enter' || event.key === ' ' || event.key === 'Escape') {
@@ -46,9 +44,9 @@
   <div class="modal panel modal-logs" role="dialog" aria-modal="true">
     <div class="modal-header">
       <div>
-        <h2 style="margin: 0;">Job Events</h2>
-        {#if logsJob}
-          <p class="notice">Job #{logsJob.id} · {displayStatus(logsJob)} · {localTimeZone}</p>
+        <h2 style="margin: 0;">{title}</h2>
+        {#if subtitle}
+          <p class="notice">{subtitle}</p>
         {/if}
       </div>
       <button class="btn icon-btn close-btn" type="button" aria-label="Close dialog" on:click={onClose}>

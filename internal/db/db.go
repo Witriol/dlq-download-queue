@@ -103,6 +103,8 @@ CREATE TABLE IF NOT EXISTS series_episodes (
   attention_candidates_json TEXT,
   search_attempts INTEGER NOT NULL DEFAULT 0,
   job_id INTEGER,
+  runtime_minutes INTEGER,
+  search_started_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   FOREIGN KEY(watch_id) REFERENCES series_watches(id) ON DELETE CASCADE,
@@ -216,11 +218,16 @@ END`); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
-	// Do not rewrite the former six-hour default here. Older databases do not
-	// record whether 21600 was the historical default or an explicit user
-	// choice, so changing it would silently destroy a valid configuration. New
-	// watches use the schema's two-hour default (and the manager's explicit
-	// default); existing watches retain their recorded timing.
+	if err := ensureTableColumn(ctx, db, "series_episodes", "runtime_minutes", "INTEGER"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureTableColumn(ctx, db, "series_episodes", "search_started_at", "TEXT"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	// series_watches.release_delay_seconds is no longer read; stored values are
+	// left untouched.
 	return db, nil
 }
 

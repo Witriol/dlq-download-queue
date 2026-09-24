@@ -11,6 +11,11 @@ import (
 	"github.com/Witriol/dlq-download-queue/internal/series"
 )
 
+const (
+	defaultSeriesEventLimit = 50
+	maxSeriesEventLimit     = 500
+)
+
 func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 	if s.Series == nil {
 		writeErr(w, http.StatusServiceUnavailable, errors.New("series watcher not configured"))
@@ -145,6 +150,19 @@ func (s *Server) handleSeriesItem(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, items)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "events" {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		events, err := s.Series.ListEvents(r.Context(), id, seriesEventLimit(r.URL.Query().Get("limit")))
+		if err != nil {
+			writeSeriesErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, events)
+		return
+	}
 	if len(parts) == 4 && parts[1] == "episodes" && parts[3] == "select" {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -192,6 +210,20 @@ func (s *Server) handleSeriesItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+func seriesEventLimit(raw string) int {
+	limit, err := strconv.Atoi(raw)
+	if err != nil {
+		return defaultSeriesEventLimit
+	}
+	if limit < 1 {
+		return 1
+	}
+	if limit > maxSeriesEventLimit {
+		return maxSeriesEventLimit
+	}
+	return limit
 }
 
 func writeSeriesErr(w http.ResponseWriter, err error) {

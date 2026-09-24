@@ -137,7 +137,7 @@ func scoreCandidate(reference ReleaseProfile, candidate ReleaseCandidate, opts M
 		out.Score += 3
 		out.Reasons = append(out.Reasons, "matching bit depth")
 	}
-	if reference.ReleaseGroup != "" && strings.EqualFold(reference.ReleaseGroup, got.ReleaseGroup) {
+	if reference.ReleaseGroup != "" && canonicalGroup(reference.ReleaseGroup) == canonicalGroup(got.ReleaseGroup) {
 		out.Score += 1
 	}
 	return out
@@ -237,7 +237,7 @@ func titleWords(s string) []string {
 func normalizeProperty(key, s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	if key == "release_group" {
-		s = strings.ReplaceAll(strings.ReplaceAll(s, "-", ""), "_", "")
+		return canonicalGroup(s)
 	}
 	if key == "codec" {
 		if s == "hevc" || s == "h.265" {

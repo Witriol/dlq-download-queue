@@ -111,6 +111,52 @@ export function formatDateTime(value: string | undefined | null): string {
   });
 }
 
+export function formatDateTimeShort(value: string | undefined | null): string {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString('cs-CZ', {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  });
+}
+
+export function localTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'local';
+}
+
+const MINUTE_MS = 60000;
+const HOUR_MS = 3600000;
+const DAY_MS = 86400000;
+
+/** "in 2 d" / "15 min ago", bucketed to minutes, hours or days. */
+export function relativeTime(value: string | undefined | null): string {
+  if (!value) return '—';
+  const target = new Date(value);
+  if (Number.isNaN(target.getTime())) return String(value);
+  const diffMs = target.getTime() - Date.now();
+  const absMs = Math.abs(diffMs);
+  if (absMs < 30000) return 'just now';
+  let amount: number;
+  let unit: string;
+  if (absMs < HOUR_MS) {
+    amount = Math.round(absMs / MINUTE_MS);
+    unit = 'min';
+  } else if (absMs < DAY_MS) {
+    amount = Math.round(absMs / HOUR_MS);
+    unit = 'h';
+  } else {
+    amount = Math.round(absMs / DAY_MS);
+    unit = 'd';
+  }
+  const label = `${amount} ${unit}`;
+  return diffMs >= 0 ? `in ${label}` : `${label} ago`;
+}
+
 export function shortURL(url: string): string {
   if (!url) return '';
   if (url.length <= 64) return url;

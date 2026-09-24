@@ -60,7 +60,6 @@ export type SeriesWatch = {
   quality_profile?: Record<string, unknown>;
   quality_profile_json?: string | Record<string, unknown>;
   fallback_policy?: 'strict' | 'balanced' | 'manual' | string;
-  release_delay_seconds?: number;
   preferred_wait_seconds?: number;
   next_check_at?: string;
   last_checked_at?: string;
@@ -119,7 +118,10 @@ export type SeriesPreview = {
   quality_profile?: Record<string, unknown>;
   reference_filename?: string;
   search_title?: string;
+  /** The reference episode (season/episode parsed from the reference filename). */
   episode?: SeriesEpisode | null;
+  /** First episode that will be tracked per start_mode; only set when tvmaze_id > 0. */
+  next_episode?: SeriesEpisode | null;
   candidates?: SeriesPreviewCandidate[];
   total_candidates?: number;
   error?: string;

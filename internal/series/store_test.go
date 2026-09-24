@@ -106,12 +106,12 @@ func TestCreateWatchPreservesZeroDelays(t *testing.T) {
 	watch := &Watch{
 		Enabled: true, TVMazeID: 1, DisplayName: "Example", SearchTitle: "Example",
 		ReferenceWebshareIdent: "ref", ReferenceFilename: "Example.S01E01.mkv", OutDir: "/data",
-		ReleaseDelaySeconds: 0, PreferredWaitSeconds: 0,
+		PreferredWaitSeconds: 0,
 	}
 	if _, err := store.CreateWatch(context.Background(), watch); err != nil {
 		t.Fatal(err)
 	}
-	if watch.ReleaseDelaySeconds != 0 || watch.PreferredWaitSeconds != 0 {
-		t.Fatalf("stored zero delays changed to %d, %d", watch.ReleaseDelaySeconds, watch.PreferredWaitSeconds)
+	if watch.PreferredWaitSeconds != 0 {
+		t.Fatalf("stored zero preferred wait changed to %d", watch.PreferredWaitSeconds)
 	}
 }

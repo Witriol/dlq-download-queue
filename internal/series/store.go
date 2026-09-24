@@ -32,13 +32,9 @@ func (s *Store) CreateWatch(ctx context.Context, w *Watch) (int64, error) {
 	if policy == "" {
 		policy = FallbackStrict
 	}
-	if w.ReleaseDelaySeconds < 0 {
-		return 0, invalid("release_delay_seconds must not be negative")
-	}
 	if w.PreferredWaitSeconds < 0 {
 		return 0, invalid("preferred_wait_seconds must not be negative")
 	}
-	releaseDelay := w.ReleaseDelaySeconds
 	preferredWait := w.PreferredWaitSeconds
 	// A newly created watch is active by default; callers can explicitly pause
 	// it immediately with SetWatchEnabled when creation is staged.
@@ -51,14 +47,14 @@ INSERT INTO series_watches (
   enabled, tvmaze_id, display_name, search_title, reference_webshare_ident,
   reference_filename, out_dir, series_folder, output_path_version, organize_by_season,
   quality_profile_json, start_mode, start_season,
-  start_episode, fallback_policy, release_delay_seconds, preferred_wait_seconds,
+  start_episode, fallback_policy, preferred_wait_seconds,
   next_check_at, last_checked_at, last_error, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 2, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 2, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `, boolInt(enabled), w.TVMazeID, w.DisplayName, w.SearchTitle,
 		w.ReferenceWebshareIdent, w.ReferenceFilename, w.OutDir, w.SeriesFolder,
 		boolInt(w.OrganizeBySeason), quality, startMode,
 		nullInt64Value(w.StartSeason), nullInt64Value(w.StartEpisode), policy,
-		releaseDelay, preferredWait, nullStringValue(w.NextCheckAt),
+		preferredWait, nullStringValue(w.NextCheckAt),
 		nullStringValue(w.LastCheckedAt), nullStringValue(w.LastError), now, now)
 	if err != nil {
 		return 0, err
@@ -72,7 +68,6 @@ INSERT INTO series_watches (
 	w.QualityProfileJSON = quality
 	w.StartMode = startMode
 	w.FallbackPolicy = policy
-	w.ReleaseDelaySeconds = releaseDelay
 	w.PreferredWaitSeconds = preferredWait
 	w.CreatedAt, w.UpdatedAt = now, now
 	return id, nil
@@ -173,14 +168,14 @@ UPDATE series_watches SET
   tvmaze_id = ?, display_name = ?, search_title = ?, reference_webshare_ident = ?,
   reference_filename = ?, out_dir = ?, series_folder = ?, organize_by_season = ?,
   quality_profile_json = ?, start_mode = ?,
-  start_season = ?, start_episode = ?, fallback_policy = ?, release_delay_seconds = ?,
+  start_season = ?, start_episode = ?, fallback_policy = ?,
   preferred_wait_seconds = ?, updated_at = ?
 WHERE id = ?
 `, w.TVMazeID, w.DisplayName, w.SearchTitle, w.ReferenceWebshareIdent,
 		w.ReferenceFilename, w.OutDir, w.SeriesFolder, boolInt(w.OrganizeBySeason),
 		w.QualityProfileJSON, w.StartMode,
 		nullInt64Value(w.StartSeason), nullInt64Value(w.StartEpisode), w.FallbackPolicy,
-		w.ReleaseDelaySeconds, w.PreferredWaitSeconds, time.Now().UTC().Format(time.RFC3339Nano), w.ID)
+		w.PreferredWaitSeconds, time.Now().UTC().Format(time.RFC3339Nano), w.ID)
 	if err != nil {
 		return err
 	}
@@ -211,18 +206,23 @@ func (s *Store) UpsertEpisode(ctx context.Context, in EpisodeInput) (*Episode, e
 	if in.AirTimestamp != nil {
 		air = in.AirTimestamp.UTC().Format(time.RFC3339Nano)
 	}
+	var runtime any
+	if in.RuntimeMinutes != nil {
+		runtime = *in.RuntimeMinutes
+	}
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO series_episodes (
   watch_id, tvmaze_episode_id, season, episode, episode_name, air_timestamp,
-  state, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  runtime_minutes, state, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(watch_id, tvmaze_episode_id) DO UPDATE SET
   season = excluded.season,
   episode = excluded.episode,
   episode_name = excluded.episode_name,
   air_timestamp = excluded.air_timestamp,
+  runtime_minutes = excluded.runtime_minutes,
   updated_at = excluded.updated_at
-`, in.WatchID, in.TVMazeEpisodeID, in.Season, in.Episode, in.EpisodeName, air, state, now, now)
+`, in.WatchID, in.TVMazeEpisodeID, in.Season, in.Episode, in.EpisodeName, air, runtime, state, now, now)
 	if err != nil {
 		return nil, err
 	}
@@ -265,6 +265,28 @@ func (s *Store) SetEpisodeState(ctx context.Context, id int64, state string) err
 		return err
 	}
 	return requireAffected(res)
+}
+
+// StartEpisodeSearch records the start of an episode's search window once.
+// It returns the stored start, which is earlier than now on later searches.
+func (s *Store) StartEpisodeSearch(ctx context.Context, id int64, now time.Time) (time.Time, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE series_episodes SET search_started_at = COALESCE(search_started_at, ?), updated_at = ? WHERE id = ?`,
+		now.UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano), id)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if err := requireAffected(res); err != nil {
+		return time.Time{}, err
+	}
+	var started sql.NullString
+	if err := s.db.QueryRowContext(ctx, `SELECT search_started_at FROM series_episodes WHERE id = ?`, id).Scan(&started); err != nil {
+		return time.Time{}, err
+	}
+	t, ok := parseNullTime(started)
+	if !ok {
+		return time.Time{}, errors.New("invalid search_started_at")
+	}
+	return t, nil
 }
 
 // IncrementEpisodeSearchAttempts durably records an unsuccessful release
@@ -313,7 +335,7 @@ func (s *Store) ResetExhaustedEpisodes(ctx context.Context, watchID int64) (int6
 	}
 	res, err := s.db.ExecContext(ctx, `
 UPDATE series_episodes
-SET state = ?, search_attempts = 0, attention_candidates_json = NULL, updated_at = ?
+SET state = ?, search_attempts = 0, search_started_at = NULL, attention_candidates_json = NULL, updated_at = ?
 WHERE watch_id = ? AND state = ? AND job_id IS NULL AND chosen_webshare_ident IS NULL
 `, StateScheduled, time.Now().UTC().Format(time.RFC3339Nano), watchID, StateNeedsAttention)
 	if err != nil {
@@ -411,6 +433,16 @@ VALUES (?, ?, ?, ?, ?, ?)
 	return res.LastInsertId()
 }
 
+// PruneEvents keeps only the newest keep events of a watch.
+func (s *Store) PruneEvents(ctx context.Context, watchID int64, keep int) error {
+	_, err := s.db.ExecContext(ctx, `
+DELETE FROM watch_events
+WHERE watch_id = ? AND id NOT IN (
+  SELECT id FROM watch_events WHERE watch_id = ? ORDER BY id DESC LIMIT ?
+)`, watchID, watchID, keep)
+	return err
+}
+
 func (s *Store) ListEvents(ctx context.Context, watchID int64, limit int) ([]WatchEvent, error) {
 	return s.listEvents(ctx, watchID, 0, limit)
 }
@@ -453,13 +485,14 @@ func (s *Store) listEvents(ctx context.Context, watchID, episodeID int64, limit 
 const watchSelect = `SELECT id, enabled, tvmaze_id, display_name, search_title,
  reference_webshare_ident, reference_filename, out_dir, series_folder,
  organize_by_season, quality_profile_json,
- start_mode, start_season, start_episode, fallback_policy, release_delay_seconds,
+ start_mode, start_season, start_episode, fallback_policy,
  preferred_wait_seconds, next_check_at, last_checked_at, last_error, created_at,
  updated_at FROM series_watches`
 
 const episodeSelect = `SELECT id, watch_id, tvmaze_episode_id, season, episode,
  episode_name, air_timestamp, state, chosen_webshare_ident, chosen_filename,
- selection_snapshot_json, attention_candidates_json, search_attempts, job_id, created_at, updated_at FROM series_episodes`
+ selection_snapshot_json, attention_candidates_json, search_attempts, job_id,
+ runtime_minutes, search_started_at, created_at, updated_at FROM series_episodes`
 
 type scanner interface{ Scan(...any) error }
 
@@ -470,7 +503,7 @@ func scanWatch(row scanner) (Watch, error) {
 		&w.ReferenceWebshareIdent, &w.ReferenceFilename, &w.OutDir, &w.SeriesFolder,
 		&organizeBySeason, &w.QualityProfileJSON,
 		&w.StartMode, &w.StartSeason, &w.StartEpisode, &w.FallbackPolicy,
-		&w.ReleaseDelaySeconds, &w.PreferredWaitSeconds, &w.NextCheckAt,
+		&w.PreferredWaitSeconds, &w.NextCheckAt,
 		&w.LastCheckedAt, &w.LastError, &w.CreatedAt, &w.UpdatedAt)
 	w.Enabled = enabled != 0
 	w.OrganizeBySeason = organizeBySeason != 0
@@ -494,7 +527,8 @@ func scanEpisode(row scanner) (Episode, error) {
 	err := row.Scan(&e.ID, &e.WatchID, &e.TVMazeEpisodeID, &e.Season, &e.Episode,
 		&e.EpisodeName, &e.AirTimestamp, &e.State, &e.ChosenWebshareIdent,
 		&e.ChosenFilename, &e.SelectionSnapshotJSON, &e.AttentionCandidatesJSON,
-		&e.SearchAttempts, &e.JobID, &e.CreatedAt, &e.UpdatedAt)
+		&e.SearchAttempts, &e.JobID, &e.RuntimeMinutes, &e.SearchStartedAt,
+		&e.CreatedAt, &e.UpdatedAt)
 	return e, err
 }
 

@@ -177,7 +177,6 @@ export type SeriesDraft = {
   initial_season?: number;
   initial_episode?: number;
   fallback_policy: string;
-  release_delay_seconds: number;
   preferred_wait_seconds: number;
   quality_profile?: Record<string, unknown>;
   preview_episode?: number | string;
@@ -214,6 +213,10 @@ export async function seriesAction(id: string | number, action: 'check-now' | 'p
     headers: { 'content-type': 'application/json' },
     body: '{}'
   });
+}
+
+export async function getSeriesEvents(id: string | number, limit = 50): Promise<string[]> {
+  return requestJson<string[]>(`/api/series/${encodeURIComponent(id)}/events?limit=${limit}`);
 }
 
 export async function listSeriesAttention(id: string | number): Promise<SeriesAttentionEpisode[]> {

@@ -32,12 +32,7 @@ const (
 	StartModeFuture   = StartModeTemplate
 )
 
-const (
-	DefaultReleaseDelay  = 2 * time.Hour
-	DefaultPreferredWait = 24 * time.Hour
-	ReleaseRetryDelay    = 2 * time.Hour
-	MaxReleaseSearches   = 4
-)
+const DefaultPreferredWait = 24 * time.Hour
 
 // ValidationError marks a request as invalid without relying on error text at
 // the HTTP boundary. The wrapped error remains available for diagnostics.
@@ -74,7 +69,6 @@ type Watch struct {
 	StartSeason            sql.NullInt64
 	StartEpisode           sql.NullInt64
 	FallbackPolicy         string
-	ReleaseDelaySeconds    int64
 	PreferredWaitSeconds   int64
 	NextCheckAt            sql.NullString
 	LastCheckedAt          sql.NullString
@@ -100,6 +94,8 @@ type Episode struct {
 	AttentionCandidatesJSON sql.NullString
 	SearchAttempts          int
 	JobID                   sql.NullInt64
+	RuntimeMinutes          sql.NullInt64
+	SearchStartedAt         sql.NullString
 	CreatedAt               string
 	UpdatedAt               string
 }
@@ -124,6 +120,7 @@ type EpisodeInput struct {
 	Episode         int
 	EpisodeName     string
 	AirTimestamp    *time.Time
+	RuntimeMinutes  *int
 	State           string
 }
 

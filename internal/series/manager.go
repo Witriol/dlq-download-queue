@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,7 +22,26 @@ import (
 const (
 	minimumProfileConfidence = 0.55
 	maxConcurrentWatchChecks = 4
+	defaultEpisodeRuntime    = 60 * time.Minute
+	searchGiveUpAfter        = 72 * time.Hour
+	minimumCheckInterval     = 5 * time.Minute
+	maxEventCandidates       = 10
+	maxEventsPerWatch        = 1000
+	eventTimeLayout          = "2006-01-02 15:04 UTC"
+	queueReasonExact         = "exact"
+	queueReasonRetry         = "retry"
+	queueReasonManual        = "manual selection"
 )
+
+// searchTiers set the release search interval by time since an episode's
+// search window started. The window closes at searchGiveUpAfter.
+var searchTiers = []struct{ before, every time.Duration }{
+	{before: 6 * time.Hour, every: 15 * time.Minute},
+	{before: 24 * time.Hour, every: time.Hour},
+	{before: searchGiveUpAfter, every: 3 * time.Hour},
+}
+
+var seasonFolderRe = regexp.MustCompile(`(?i)^(s|season[ ._-]?)\d{1,3}$`)
 
 var (
 	ErrAttentionSelectionConflict = errors.New("attention selection conflict")
@@ -66,7 +86,6 @@ type CreateRequest struct {
 	InitialSeason          int             `json:"initial_season"`
 	InitialEpisode         int             `json:"initial_episode"`
 	FallbackPolicy         string          `json:"fallback_policy"`
-	ReleaseDelaySeconds    *int64          `json:"release_delay_seconds"`
 	PreferredWaitSeconds   *int64          `json:"preferred_wait_seconds"`
 	QualityProfile         json.RawMessage `json:"quality_profile"`
 }
@@ -77,7 +96,6 @@ type UpdateRequest struct {
 	OrganizeBySeason     *bool           `json:"organize_by_season"`
 	SearchTitle          *string         `json:"search_title"`
 	FallbackPolicy       *string         `json:"fallback_policy"`
-	ReleaseDelaySeconds  *int64          `json:"release_delay_seconds"`
 	PreferredWaitSeconds *int64          `json:"preferred_wait_seconds"`
 	QualityProfile       json.RawMessage `json:"quality_profile"`
 }
@@ -89,6 +107,7 @@ type PreviewResponse struct {
 	QualityProfile         ReleaseProfile  `json:"quality_profile"`
 	Tokens                 []string        `json:"tokens,omitempty"`
 	Episode                *EpisodeView    `json:"episode,omitempty"`
+	NextEpisode            *EpisodeView    `json:"next_episode,omitempty"`
 	TotalCandidates        int             `json:"total_candidates"`
 	Candidates             []CandidateView `json:"candidates"`
 }
@@ -142,7 +161,6 @@ type WatchView struct {
 	OrganizeBySeason       bool            `json:"organize_by_season"`
 	QualityProfile         json.RawMessage `json:"quality_profile"`
 	FallbackPolicy         string          `json:"fallback_policy"`
-	ReleaseDelaySeconds    int64           `json:"release_delay_seconds"`
 	PreferredWaitSeconds   int64           `json:"preferred_wait_seconds"`
 	NextCheckAt            string          `json:"next_check_at,omitempty"`
 	LastCheckedAt          string          `json:"last_checked_at,omitempty"`
@@ -196,24 +214,29 @@ func (m *Manager) Preview(ctx context.Context, req CreateRequest) (*PreviewRespo
 		return nil, err
 	}
 	out := &PreviewResponse{ReferenceWebshareIdent: ident, ReferenceFilename: filename, SearchTitle: parsed.SearchTitle, QualityProfile: profile, Tokens: parsed.RawTokens, Candidates: []CandidateView{}}
-	if req.TVMazeID <= 0 {
+	if req.TVMazeID > 0 {
+		episodes, err := m.TVMaze.Episodes(ctx, req.TVMazeID)
+		if err != nil {
+			return nil, err
+		}
+		target := choosePreviewEpisode(episodes, parsed, req, m.now())
+		if target != nil && target.Number != nil {
+			next := EpisodeView{TVMazeEpisodeID: target.ID, Season: target.Season, Episode: *target.Number, EpisodeName: target.Name}
+			if target.Airstamp != nil {
+				next.AirTimestamp = target.Airstamp.UTC().Format(time.RFC3339)
+			}
+			out.NextEpisode = &next
+		}
+	}
+	// The reference episode is known to be released, so searching it shows
+	// what the current settings would pick even before the next one airs.
+	if len(parsed.Episodes) == 0 {
 		return out, nil
 	}
-	episodes, err := m.TVMaze.Episodes(ctx, req.TVMazeID)
-	if err != nil {
-		return nil, err
-	}
-	target := choosePreviewEpisode(episodes, parsed, req, m.now())
-	if target == nil || target.Number == nil {
-		return out, nil
-	}
-	ep := EpisodeView{TVMazeEpisodeID: target.ID, Season: target.Season, Episode: *target.Number, EpisodeName: target.Name}
-	if target.Airstamp != nil {
-		ep.AirTimestamp = target.Airstamp.UTC().Format(time.RFC3339)
-	}
-	out.Episode = &ep
+	reference := parsed.Episodes[0]
+	out.Episode = &EpisodeView{Season: reference.Season, Episode: reference.Episode}
 	title := firstNonEmpty(req.SearchTitle, parsed.SearchTitle, req.DisplayName)
-	scored, err := m.searchEpisode(ctx, title, target.Season, *target.Number, profile, preferences)
+	scored, err := m.searchEpisode(ctx, title, reference.Season, reference.Episode, profile, preferences)
 	if err != nil {
 		return nil, err
 	}
@@ -274,13 +297,6 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*WatchView, er
 	if !validPolicy(policy) {
 		return nil, invalid("invalid fallback_policy")
 	}
-	releaseDelay := int64(DefaultReleaseDelay / time.Second)
-	if req.ReleaseDelaySeconds != nil {
-		if *req.ReleaseDelaySeconds < 0 {
-			return nil, invalid("release_delay_seconds must not be negative")
-		}
-		releaseDelay = *req.ReleaseDelaySeconds
-	}
 	preferredWait := int64(DefaultPreferredWait / time.Second)
 	if req.PreferredWaitSeconds != nil {
 		if *req.PreferredWaitSeconds < 0 {
@@ -293,7 +309,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*WatchView, er
 	if req.OrganizeBySeason != nil {
 		organizeBySeason = *req.OrganizeBySeason
 	}
-	w := &Watch{Enabled: true, TVMazeID: req.TVMazeID, DisplayName: strings.TrimSpace(req.DisplayName), SearchTitle: searchTitle, ReferenceWebshareIdent: ident, ReferenceFilename: filename, OutDir: outDir, SeriesFolder: "", OrganizeBySeason: organizeBySeason, QualityProfileJSON: string(encoded), StartMode: mode, FallbackPolicy: policy, ReleaseDelaySeconds: releaseDelay, PreferredWaitSeconds: preferredWait}
+	w := &Watch{Enabled: true, TVMazeID: req.TVMazeID, DisplayName: strings.TrimSpace(req.DisplayName), SearchTitle: searchTitle, ReferenceWebshareIdent: ident, ReferenceFilename: filename, OutDir: outDir, SeriesFolder: "", OrganizeBySeason: organizeBySeason, QualityProfileJSON: string(encoded), StartMode: mode, FallbackPolicy: policy, PreferredWaitSeconds: preferredWait}
 	if mode == StartModeSpecific {
 		if req.InitialSeason <= 0 || req.InitialEpisode <= 0 {
 			return nil, invalid("specific start mode requires initial_season and initial_episode")
@@ -342,7 +358,7 @@ func (m *Manager) Update(ctx context.Context, id int64, req UpdateRequest) (*Wat
 		return nil, err
 	}
 	originalPolicy := w.FallbackPolicy
-	searchSettingsChanged := req.SearchTitle != nil || req.ReleaseDelaySeconds != nil || req.PreferredWaitSeconds != nil || len(req.QualityProfile) > 0
+	searchSettingsChanged := req.SearchTitle != nil || req.PreferredWaitSeconds != nil || len(req.QualityProfile) > 0
 	policyChanged := req.FallbackPolicy != nil && *req.FallbackPolicy != originalPolicy
 	if req.OutDir != nil {
 		outDir, err := m.cleanOutDir(*req.OutDir)
@@ -371,12 +387,6 @@ func (m *Manager) Update(ctx context.Context, id int64, req UpdateRequest) (*Wat
 			return nil, invalid("invalid fallback_policy")
 		}
 		w.FallbackPolicy = *req.FallbackPolicy
-	}
-	if req.ReleaseDelaySeconds != nil {
-		if *req.ReleaseDelaySeconds < 0 {
-			return nil, invalid("release_delay_seconds must not be negative")
-		}
-		w.ReleaseDelaySeconds = *req.ReleaseDelaySeconds
 	}
 	if req.PreferredWaitSeconds != nil {
 		if *req.PreferredWaitSeconds < 0 {
@@ -496,7 +506,7 @@ func (m *Manager) SelectAttentionCandidate(ctx context.Context, watchID, episode
 		return &view, nil
 	}
 	if !ep.JobID.Valid && ep.ChosenWebshareIdent.Valid && ep.ChosenWebshareIdent.String == ident {
-		if err := m.queueSelection(ctx, w, ep); err != nil {
+		if err := m.queueSelection(ctx, w, ep, queueReasonManual); err != nil {
 			return nil, err
 		}
 		updated, err := m.Store.GetEpisode(ctx, ep.ID)
@@ -532,7 +542,7 @@ func (m *Manager) SelectAttentionCandidate(ctx context.Context, watchID, episode
 	}
 	ep.ChosenWebshareIdent = sql.NullString{String: selected.Ident, Valid: true}
 	ep.ChosenFilename = sql.NullString{String: selected.Filename, Valid: true}
-	if err := m.queueSelection(ctx, w, ep); err != nil {
+	if err := m.queueSelection(ctx, w, ep, queueReasonManual); err != nil {
 		return nil, err
 	}
 	updated, err := m.Store.GetEpisode(ctx, ep.ID)
@@ -541,6 +551,23 @@ func (m *Manager) SelectAttentionCandidate(ctx context.Context, watchID, episode
 	}
 	view := episodeView(*updated)
 	return &view, nil
+}
+
+// ListEvents returns a watch's check log, newest first, in the job events
+// line format "<created_at> <level> <message>".
+func (m *Manager) ListEvents(ctx context.Context, id int64, limit int) ([]string, error) {
+	if _, err := m.Store.GetWatch(ctx, id); err != nil {
+		return nil, err
+	}
+	events, err := m.Store.ListEvents(ctx, id, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(events))
+	for _, e := range events {
+		out = append(out, e.CreatedAt+" "+e.Level+" "+e.Message)
+	}
+	return out, nil
 }
 
 func (m *Manager) CheckNow(ctx context.Context, id int64) (*WatchView, error) {
@@ -611,6 +638,7 @@ func (m *Manager) processWatchWithOptions(ctx context.Context, id int64, recover
 	if err != nil {
 		m.recordWatchFailure(ctx, id, err)
 	}
+	_ = m.Store.PruneEvents(ctx, id, maxEventsPerWatch)
 	return err
 }
 
@@ -660,7 +688,7 @@ func (m *Manager) processWatchUnlocked(ctx context.Context, id int64) error {
 		if remote.Number == nil || remote.Season <= 0 || *remote.Number <= 0 || !shouldTrack(*w, remote) {
 			continue
 		}
-		_, err = m.Store.UpsertEpisode(ctx, EpisodeInput{WatchID: id, TVMazeEpisodeID: remote.ID, Season: remote.Season, Episode: *remote.Number, EpisodeName: remote.Name, AirTimestamp: remote.Airstamp, State: StateScheduled})
+		_, err = m.Store.UpsertEpisode(ctx, EpisodeInput{WatchID: id, TVMazeEpisodeID: remote.ID, Season: remote.Season, Episode: *remote.Number, EpisodeName: remote.Name, AirTimestamp: remote.Airstamp, RuntimeMinutes: remote.Runtime, State: StateScheduled})
 		if err != nil {
 			return err
 		}
@@ -681,6 +709,11 @@ func (m *Manager) processWatchUnlocked(ctx context.Context, id int64) error {
 			hasNext = true
 		}
 	}
+	// handled records whether this check searched or queued anything; a check
+	// that did neither still logs one summary line.
+	handled := false
+	var nextAiring *Episode
+	var nextAiringEnd time.Time
 	for i := range stored {
 		ep := &stored[i]
 		if ep.JobID.Valid {
@@ -688,9 +721,10 @@ func (m *Manager) processWatchUnlocked(ctx context.Context, id int64) error {
 			continue
 		}
 		if ep.ChosenWebshareIdent.Valid {
-			if err := m.queueSelection(ctx, w, ep); err != nil {
+			if err := m.queueSelection(ctx, w, ep, queueReasonRetry); err != nil {
 				return err
 			}
+			handled = true
 			continue
 		}
 		if ep.State == StateNeedsAttention {
@@ -700,72 +734,26 @@ func (m *Manager) processWatchUnlocked(ctx context.Context, id int64) error {
 		if !ok {
 			continue
 		}
-		searchFrom := air.Add(time.Duration(w.ReleaseDelaySeconds) * time.Second)
-		if now.Before(searchFrom) {
+		airEnd := air.Add(episodeRuntime(ep))
+		if now.Before(airEnd) {
 			_ = m.Store.SetEpisodeState(ctx, ep.ID, StateWaitingRelease)
-			considerNext(searchFrom)
+			considerNext(airEnd)
+			if nextAiring == nil || airEnd.Before(nextAiringEnd) {
+				nextAiring, nextAiringEnd = ep, airEnd
+			}
 			continue
 		}
-		scored, err := m.searchEpisode(ctx, w.SearchTitle, ep.Season, ep.Episode, profile, prefs)
+		handled = true
+		nextSearch, scheduled, err := m.searchRelease(ctx, w, ep, profile, prefs, now)
 		if err != nil {
 			return err
 		}
-		accepted := acceptedCandidates(scored)
-		var chosen *ScoredCandidate
-		for j := range accepted {
-			if accepted[j].Exact {
-				chosen = &accepted[j]
-				break
-			}
+		if scheduled {
+			considerNext(nextSearch)
 		}
-		waitExpired := !now.Before(searchFrom.Add(time.Duration(w.PreferredWaitSeconds) * time.Second))
-		if chosen == nil && w.FallbackPolicy == FallbackBalanced && waitExpired && len(accepted) > 0 {
-			chosen = &accepted[0]
-		}
-		if chosen != nil {
-			snapshot := mustJSON(candidateView(*chosen))
-			if err := m.Store.SetEpisodeSelection(ctx, ep.ID, chosen.Candidate.Ident, chosen.Candidate.Filename, snapshot); err != nil {
-				if errors.Is(err, sql.ErrNoRows) {
-					continue
-				}
-				return err
-			}
-			ep.ChosenWebshareIdent = sql.NullString{String: chosen.Candidate.Ident, Valid: true}
-			ep.ChosenFilename = sql.NullString{String: chosen.Candidate.Filename, Valid: true}
-			if err := m.queueSelection(ctx, w, ep); err != nil {
-				return err
-			}
-			continue
-		}
-		attempts, err := m.Store.IncrementEpisodeSearchAttempts(ctx, ep.ID)
-		if err != nil {
-			return err
-		}
-		if attempts >= MaxReleaseSearches {
-			if w.FallbackPolicy == FallbackManual {
-				if err := m.Store.SetEpisodeAttention(ctx, ep.ID, mustJSON(candidateViews(accepted))); err != nil {
-					return err
-				}
-			} else if err := m.Store.SetEpisodeState(ctx, ep.ID, StateNeedsAttention); err != nil {
-				return err
-			}
-			_, _ = m.Store.AddEvent(ctx, w.ID, ep.ID, "warning", "release not found after four searches", mustJSON(map[string]any{"attempts": attempts, "candidates": candidateViews(scored)}))
-			continue
-		}
-		_ = m.Store.SetEpisodeState(ctx, ep.ID, StatePreferredNotFound)
-		_, _ = m.Store.AddEvent(ctx, w.ID, ep.ID, "warning", "release not found; retry scheduled", mustJSON(map[string]any{"attempt": attempts, "max_attempts": MaxReleaseSearches, "candidates": candidateViews(scored)}))
-		nextAttempt := now.Add(ReleaseRetryDelay)
-		// Keep the bounded retry lifecycle while ensuring Balanced gets one
-		// final search when its preferred-quality wait expires. With the
-		// defaults, the first three searches happen every two hours and the
-		// fourth happens at the 24-hour fallback point.
-		if w.FallbackPolicy == FallbackBalanced && attempts == MaxReleaseSearches-1 {
-			fallbackAt := searchFrom.Add(time.Duration(w.PreferredWaitSeconds) * time.Second)
-			if fallbackAt.After(nextAttempt) {
-				nextAttempt = fallbackAt
-			}
-		}
-		considerNext(nextAttempt)
+	}
+	if !handled {
+		_, _ = m.Store.AddEvent(ctx, w.ID, 0, "info", noEpisodeDueMessage(nextAiring, nextAiringEnd), "")
 	}
 	// Release searches wait for the known episode time. TVmaze metadata is
 	// still refreshed daily so schedule changes and newly announced earlier
@@ -774,13 +762,172 @@ func (m *Manager) processWatchUnlocked(ctx context.Context, id int64) error {
 	if !hasNext || metadataRefresh.Before(next) {
 		next = metadataRefresh
 	}
-	if next.Before(now.Add(5 * time.Minute)) {
-		next = now.Add(5 * time.Minute)
+	if next.Before(now.Add(minimumCheckInterval)) {
+		next = now.Add(minimumCheckInterval)
 	}
 	return m.Store.UpdateWatchCheck(ctx, id, &now, &next, "")
 }
 
-func (m *Manager) queueSelection(ctx context.Context, w *Watch, ep *Episode) error {
+// searchRelease runs one release search for an aired episode and applies the
+// watch's fallback policy. It returns the episode's next search time when the
+// episode stays in its search window.
+func (m *Manager) searchRelease(ctx context.Context, w *Watch, ep *Episode, profile ReleaseProfile, prefs map[string]string, now time.Time) (time.Time, bool, error) {
+	windowStart, err := m.Store.StartEpisodeSearch(ctx, ep.ID, now)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	scored, err := m.searchEpisode(ctx, w.SearchTitle, ep.Season, ep.Episode, profile, prefs)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	code := episodeCode(ep.Season, ep.Episode)
+	accepted := acceptedCandidates(scored)
+	exactCount := 0
+	var chosen *ScoredCandidate
+	for j := range accepted {
+		if !accepted[j].Exact {
+			continue
+		}
+		exactCount++
+		if chosen == nil {
+			chosen = &accepted[j]
+		}
+	}
+	reason := queueReasonExact
+	preferredWait := time.Duration(w.PreferredWaitSeconds) * time.Second
+	waitExpired := !now.Before(windowStart.Add(preferredWait))
+	if chosen == nil && w.FallbackPolicy == FallbackBalanced && waitExpired && len(accepted) > 0 {
+		chosen = &accepted[0]
+		reason = "alternative after " + shortDuration(preferredWait)
+	}
+	if chosen != nil {
+		snapshot := mustJSON(candidateView(*chosen))
+		if err := m.Store.SetEpisodeSelection(ctx, ep.ID, chosen.Candidate.Ident, chosen.Candidate.Filename, snapshot); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return time.Time{}, false, nil
+			}
+			return time.Time{}, false, err
+		}
+		ep.ChosenWebshareIdent = sql.NullString{String: chosen.Candidate.Ident, Valid: true}
+		ep.ChosenFilename = sql.NullString{String: chosen.Candidate.Filename, Valid: true}
+		return time.Time{}, false, m.queueSelection(ctx, w, ep, reason)
+	}
+
+	attempts, err := m.Store.IncrementEpisodeSearchAttempts(ctx, ep.ID)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	details := mustJSON(map[string]any{"attempt": attempts, "candidates": eventCandidates(scored)})
+	if w.FallbackPolicy == FallbackManual && waitExpired && len(accepted) > 0 {
+		if err := m.Store.SetEpisodeAttention(ctx, ep.ID, mustJSON(candidateViews(accepted))); err != nil {
+			return time.Time{}, false, err
+		}
+		_, _ = m.Store.AddEvent(ctx, w.ID, ep.ID, "warning", fmt.Sprintf("%s needs review: %d alternatives", code, len(accepted)), details)
+		return time.Time{}, false, nil
+	}
+	if now.Sub(windowStart) >= searchGiveUpAfter {
+		if w.FallbackPolicy == FallbackManual {
+			if err := m.Store.SetEpisodeAttention(ctx, ep.ID, mustJSON(candidateViews(accepted))); err != nil {
+				return time.Time{}, false, err
+			}
+		} else if err := m.Store.SetEpisodeState(ctx, ep.ID, StateNeedsAttention); err != nil {
+			return time.Time{}, false, err
+		}
+		cause := "no matching release"
+		if len(accepted) > 0 {
+			cause = fmt.Sprintf("no exact release, %d alternatives", len(accepted))
+		}
+		_, _ = m.Store.AddEvent(ctx, w.ID, ep.ID, "warning", fmt.Sprintf("%s gave up after %s: %s", code, shortDuration(searchGiveUpAfter), cause), details)
+		return time.Time{}, false, nil
+	}
+
+	_ = m.Store.SetEpisodeState(ctx, ep.ID, StatePreferredNotFound)
+	next := nextSearchAt(w, windowStart, now)
+	if next.Before(now.Add(minimumCheckInterval)) {
+		next = now.Add(minimumCheckInterval)
+	}
+	message := fmt.Sprintf("%s search #%d: %d results, %d accepted, %d exact; next search %s", code, attempts, len(scored), len(accepted), exactCount, formatEventTime(next))
+	_, _ = m.Store.AddEvent(ctx, w.ID, ep.ID, "info", message, details)
+	return next, true, nil
+}
+
+// nextSearchAt applies the search tiers, stops at the give-up time, and moves
+// the search forward to the instant the preferred-quality wait expires.
+func nextSearchAt(w *Watch, windowStart, now time.Time) time.Time {
+	giveUpAt := windowStart.Add(searchGiveUpAfter)
+	next := giveUpAt
+	age := now.Sub(windowStart)
+	for _, tier := range searchTiers {
+		if age < tier.before {
+			next = now.Add(tier.every)
+			break
+		}
+	}
+	if next.After(giveUpAt) {
+		next = giveUpAt
+	}
+	if w.FallbackPolicy == FallbackStrict {
+		return next
+	}
+	fallbackAt := windowStart.Add(time.Duration(w.PreferredWaitSeconds) * time.Second)
+	if fallbackAt.After(now) && fallbackAt.Before(next) {
+		next = fallbackAt
+	}
+	return next
+}
+
+func episodeRuntime(ep *Episode) time.Duration {
+	if !ep.RuntimeMinutes.Valid || ep.RuntimeMinutes.Int64 <= 0 {
+		return defaultEpisodeRuntime
+	}
+	return time.Duration(ep.RuntimeMinutes.Int64) * time.Minute
+}
+
+func noEpisodeDueMessage(next *Episode, airEnd time.Time) string {
+	if next == nil {
+		return "no episode due; no upcoming episode known"
+	}
+	return fmt.Sprintf("no episode due; next %s ends %s", episodeLabel(next), formatEventTime(airEnd))
+}
+
+func episodeCode(season, episode int) string {
+	return fmt.Sprintf("S%02dE%02d", season, episode)
+}
+
+func episodeLabel(ep *Episode) string {
+	code := episodeCode(ep.Season, ep.Episode)
+	if strings.TrimSpace(ep.EpisodeName) == "" {
+		return code
+	}
+	return code + ` "` + ep.EpisodeName + `"`
+}
+
+func formatEventTime(t time.Time) string {
+	return t.UTC().Format(eventTimeLayout)
+}
+
+func shortDuration(d time.Duration) string {
+	if d%time.Hour == 0 {
+		return fmt.Sprintf("%dh", int64(d/time.Hour))
+	}
+	if d%time.Minute == 0 {
+		return fmt.Sprintf("%dm", int64(d/time.Minute))
+	}
+	return d.String()
+}
+
+// eventCandidates keeps event details small; scored is already ordered
+// accepted first, then by score.
+func eventCandidates(scored []ScoredCandidate) []CandidateView {
+	if len(scored) > maxEventCandidates {
+		scored = scored[:maxEventCandidates]
+	}
+	return candidateViews(scored)
+}
+
+// queueSelection creates the download job for a durable selection. reason is
+// shown in the check log, e.g. "exact" or "alternative after 24h".
+func (m *Manager) queueSelection(ctx context.Context, w *Watch, ep *Episode, reason string) error {
 	if m.Queue == nil {
 		return errors.New("queue service not configured")
 	}
@@ -802,7 +949,8 @@ func (m *Manager) queueSelection(ctx context.Context, w *Watch, ep *Episode) err
 	if err := m.Store.AttachJob(ctx, ep.ID, jobID, StateQueued); err != nil {
 		return err
 	}
-	_, _ = m.Store.AddEvent(ctx, w.ID, ep.ID, "info", "release queued", mustJSON(map[string]any{"job_id": jobID, "webshare_ident": ep.ChosenWebshareIdent.String, "filename": ep.ChosenFilename.String, "out_dir": outDir}))
+	message := fmt.Sprintf("%s queued job #%d (%s): %s", episodeCode(ep.Season, ep.Episode), jobID, reason, ep.ChosenFilename.String)
+	_, _ = m.Store.AddEvent(ctx, w.ID, ep.ID, "info", message, mustJSON(map[string]any{"job_id": jobID, "webshare_ident": ep.ChosenWebshareIdent.String, "filename": ep.ChosenFilename.String, "out_dir": outDir}))
 	return nil
 }
 
@@ -810,7 +958,7 @@ func (m *Manager) searchEpisode(ctx context.Context, title string, season, episo
 	if m.Webshare == nil {
 		return nil, errors.New("Webshare client not configured")
 	}
-	code := fmt.Sprintf("S%02dE%02d", season, episode)
+	code := episodeCode(season, episode)
 	queries := []string{strings.TrimSpace(title + " " + code), strings.ReplaceAll(strings.TrimSpace(title), " ", ".") + "." + code}
 	seen := map[string]bool{}
 	var candidates []ReleaseCandidate
@@ -860,7 +1008,7 @@ func (m *Manager) view(ctx context.Context, w *Watch) (*WatchView, error) {
 		return nil, err
 	}
 	now := m.now()
-	v := &WatchView{ID: w.ID, Enabled: w.Enabled, TVMazeID: w.TVMazeID, DisplayName: w.DisplayName, SearchTitle: w.SearchTitle, ReferenceWebshareIdent: w.ReferenceWebshareIdent, ReferenceFilename: w.ReferenceFilename, OutDir: w.OutDir, SeriesFolder: w.SeriesFolder, OrganizeBySeason: w.OrganizeBySeason, QualityProfile: json.RawMessage(w.QualityProfileJSON), FallbackPolicy: w.FallbackPolicy, ReleaseDelaySeconds: w.ReleaseDelaySeconds, PreferredWaitSeconds: w.PreferredWaitSeconds, NextCheckAt: nullString(w.NextCheckAt), LastCheckedAt: nullString(w.LastCheckedAt), LastError: nullString(w.LastError), Status: "active", CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt}
+	v := &WatchView{ID: w.ID, Enabled: w.Enabled, TVMazeID: w.TVMazeID, DisplayName: w.DisplayName, SearchTitle: w.SearchTitle, ReferenceWebshareIdent: w.ReferenceWebshareIdent, ReferenceFilename: w.ReferenceFilename, OutDir: w.OutDir, SeriesFolder: w.SeriesFolder, OrganizeBySeason: w.OrganizeBySeason, QualityProfile: json.RawMessage(w.QualityProfileJSON), FallbackPolicy: w.FallbackPolicy, PreferredWaitSeconds: w.PreferredWaitSeconds, NextCheckAt: nullString(w.NextCheckAt), LastCheckedAt: nullString(w.LastCheckedAt), LastError: nullString(w.LastError), Status: "active", CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt}
 	if !w.Enabled {
 		v.Status = "paused"
 	}
@@ -908,9 +1056,17 @@ func (m *Manager) syncJobState(ctx context.Context, ep *Episode) {
 	case "decrypting", "decrypt_failed":
 		mapped = state
 	}
-	if mapped != ep.State {
-		_ = m.Store.SetEpisodeState(ctx, ep.ID, mapped)
+	if mapped == ep.State {
+		return
 	}
+	if err := m.Store.SetEpisodeState(ctx, ep.ID, mapped); err != nil {
+		return
+	}
+	level := "info"
+	if mapped == StateFailed || mapped == queue.StatusDecryptFail {
+		level = "error"
+	}
+	_, _ = m.Store.AddEvent(ctx, ep.WatchID, ep.ID, level, fmt.Sprintf("%s job #%d %s", episodeCode(ep.Season, ep.Episode), ep.JobID.Int64, mapped), "")
 }
 
 func decodeProfile(raw json.RawMessage, fallback ReleaseProfile) (ReleaseProfile, map[string]string, error) {
@@ -1011,11 +1167,17 @@ func (m *Manager) episodeOutDir(w *Watch, season int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	parts := []string{root}
-	if w.OrganizeBySeason {
-		parts = append(parts, fmt.Sprintf("s%02d", season))
+	if !w.OrganizeBySeason {
+		return root, nil
 	}
-	return m.cleanOutDir(filepath.Join(parts...))
+	// Users often pick an existing season folder as out_dir; appending another
+	// season folder would nest them (".../s04/s04").
+	if seasonFolderRe.MatchString(filepath.Base(root)) {
+		if parent, err := m.cleanOutDir(filepath.Dir(root)); err == nil {
+			root = parent
+		}
+	}
+	return m.cleanOutDir(filepath.Join(root, fmt.Sprintf("s%02d", season)))
 }
 
 func normalizeSeriesFolder(input string) (string, error) {

@@ -1,7 +1,8 @@
 <script>
   import { onMount } from 'svelte';
   import { addJobsBatch, clearJobs, getEvents, getMeta, getSettings, listJobs, postAction, postGroupAction, updateSettings } from '$lib/api';
-  import { humanBytes, humanDuration } from '$lib/format';
+  import { displayStatus } from '$lib/status';
+  import { humanBytes, humanDuration, localTimeZone } from '$lib/format';
   import { countsFor, detectSite, parseUrls, sortJobs } from '$lib/job-utils';
   import JobsTable from '$lib/components/JobsTable.svelte';
   import AddJobsModal from '$lib/components/AddJobsModal.svelte';
@@ -424,6 +425,8 @@
     if (showLogs) startLogsTimer();
   }
 
+  $: logsSubtitle = logsJob ? `Job #${logsJob.id} · ${displayStatus(logsJob)} · ${localTimeZone()}` : '';
+
   $: pageModalOpen = showAdd || showBrowser || showLogs || showSettings || showClearConfirm || watcherModalOpen;
   $: syncBodyScrollLock(pageModalOpen);
 
@@ -534,7 +537,8 @@
 
 <LogsModal
   show={showLogs}
-  {logsJob}
+  title="Job Events"
+  subtitle={logsSubtitle}
   {logsEvents}
   bind:logsLimit
   bind:logsAutoRefresh

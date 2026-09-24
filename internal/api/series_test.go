@@ -3,13 +3,17 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Witriol/dlq-download-queue/internal/db"
+	"github.com/Witriol/dlq-download-queue/internal/resolver"
 	"github.com/Witriol/dlq-download-queue/internal/series"
 )
 
@@ -23,6 +27,16 @@ func (emptyTVMaze) Episodes(context.Context, int64) ([]series.TVMazeEpisode, err
 	return []series.TVMazeEpisode{}, nil
 }
 
+type emptyWebshare struct{}
+
+func (emptyWebshare) SearchVideos(context.Context, string, int, int) ([]resolver.WebshareSearchResult, error) {
+	return []resolver.WebshareSearchResult{}, nil
+}
+
+func (emptyWebshare) FileInfo(context.Context, string) (*resolver.WebshareFile, error) {
+	return nil, errors.New("unexpected FileInfo call")
+}
+
 func newSeriesServer(t *testing.T) *Server {
 	t.Helper()
 	conn, err := db.Open(filepath.Join(t.TempDir(), "api-series.db"))
@@ -31,7 +45,7 @@ func newSeriesServer(t *testing.T) *Server {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	return &Server{Series: &series.Manager{
-		Store: series.NewStore(conn), TVMaze: emptyTVMaze{}, AllowedRoots: []string{"/data"},
+		Store: series.NewStore(conn), TVMaze: emptyTVMaze{}, Webshare: emptyWebshare{}, AllowedRoots: []string{"/data"},
 	}}
 }
 
@@ -146,6 +160,59 @@ func TestSeriesAttentionEndpointsExposeOnlyPersistedCandidates(t *testing.T) {
 	server.Handler().ServeHTTP(invalid, httptest.NewRequest(http.MethodPost, "/series/"+jsonNumber(watch.ID)+"/episodes/"+jsonNumber(ep.ID)+"/select", strings.NewReader(`{"ident":"untrusted"}`)))
 	if invalid.Code != http.StatusBadRequest {
 		t.Fatalf("invalid selection status=%d body=%s", invalid.Code, invalid.Body.String())
+	}
+}
+
+func TestSeriesEventsEndpoint(t *testing.T) {
+	server := newSeriesServer(t)
+	createBody := `{"reference_url":"https://webshare.cz/#/file/abcde","reference_filename":"Some.Show.S01E01.1080p.WEB-DL.x265-MeGusta.mkv","out_dir":"/data/tv","tvmaze_id":42,"display_name":"Some Show"}`
+	created := httptest.NewRecorder()
+	server.Handler().ServeHTTP(created, httptest.NewRequest(http.MethodPost, "/series", strings.NewReader(createBody)))
+	var watch series.WatchView
+	if err := json.Unmarshal(created.Body.Bytes(), &watch); err != nil {
+		t.Fatal(err)
+	}
+	// Creation already logged one event; 501 more exceed the clamp.
+	for i := range 501 {
+		if _, err := server.Series.Store.AddEvent(context.Background(), watch.ID, 0, "info", "event "+strconv.Itoa(i), ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	get := func(query string) (int, []string) {
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/series/"+jsonNumber(watch.ID)+"/events"+query, nil))
+		var lines []string
+		if recorder.Code == http.StatusOK {
+			if err := json.Unmarshal(recorder.Body.Bytes(), &lines); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return recorder.Code, lines
+	}
+	tests := []struct {
+		query string
+		want  int
+	}{
+		{query: "", want: 50},
+		{query: "?limit=0", want: 1},
+		{query: "?limit=7", want: 7},
+		{query: "?limit=10000", want: 500},
+	}
+	for _, test := range tests {
+		code, lines := get(test.query)
+		if code != http.StatusOK || len(lines) != test.want {
+			t.Fatalf("events%s status=%d lines=%d; want %d", test.query, code, len(lines), test.want)
+		}
+	}
+	_, lines := get("?limit=1")
+	createdAt, rest, ok := strings.Cut(lines[0], " ")
+	if _, err := time.Parse(time.RFC3339Nano, createdAt); err != nil || !ok || rest != "info event 500" {
+		t.Fatalf("event line = %q; want \"<RFC3339Nano> info event 500\"", lines[0])
+	}
+	missing := httptest.NewRecorder()
+	server.Handler().ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/series/"+jsonNumber(watch.ID+1)+"/events", nil))
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("unknown watch events status = %d body=%s", missing.Code, missing.Body.String())
 	}
 }
 

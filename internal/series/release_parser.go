@@ -35,6 +35,8 @@ var (
 	releaseEpisodeRe = regexp.MustCompile(`(?i)(?:\bS(\d{1,3})E(\d{1,3})(E(\d{1,3}))*\b)|(?:\b(\d{1,3})x(\d{1,3})\b)`)
 	resolutionRe     = regexp.MustCompile(`(?i)^(?:480|576|720|1080|1440|2160|4320)(?:p|i)?$`)
 	bitDepthRe       = regexp.MustCompile(`(?i)^(8|10|12)bit$`)
+	// Indexer tags such as "[EZTVx.to]" or "[rartv]" follow the group name.
+	siteTagRe = regexp.MustCompile(`\s*\[[^\]]*\]\s*$`)
 )
 
 // ParseReleaseName extracts a profile from a filename. It accepts both scene
@@ -66,7 +68,7 @@ func ParseReleaseName(filename string) ReleaseProfile {
 		classifyToken(&p, token)
 	}
 	classifyCompoundFacts(&p, stem)
-	if group := releaseGroup(stem[match[1]:]); group != "" {
+	if group := releaseGroup(siteTagRe.ReplaceAllString(stem[match[1]:], "")); group != "" {
 		p.ReleaseGroup = canonicalGroup(group)
 	}
 	// A number and title are the only facts that are safe to require. Every
@@ -218,6 +220,11 @@ func releaseGroup(suffix string) string {
 }
 
 func canonicalGroup(s string) string {
+	// Profiles stored before site tags were stripped hold values such as
+	// "megusta[eztvx"; the tag is cut at its opening bracket.
+	if i := strings.Index(s, "["); i > 0 {
+		s = s[:i]
+	}
 	return strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(s), "-", ""), "_", ""))
 }
 func appendUnique(in []string, value string) []string {
