@@ -148,6 +148,16 @@ func (s *Store) ScheduleWatchCheck(ctx context.Context, id int64, next time.Time
 	return requireAffected(res)
 }
 
+// SetWatchShow stores the TVmaze show status as returned by TVmaze and the
+// channel timezone ("" when TVmaze has none).
+func (s *Store) SetWatchShow(ctx context.Context, id int64, status, airTimezone string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE series_watches SET show_status = ?, air_timezone = ?, updated_at = ? WHERE id = ?`, status, airTimezone, time.Now().UTC().Format(time.RFC3339Nano), id)
+	if err != nil {
+		return err
+	}
+	return requireAffected(res)
+}
+
 // SetWatchEnabled changes whether a watch is picked up by ListDueWatches.
 func (s *Store) SetWatchEnabled(ctx context.Context, id int64, enabled bool) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE series_watches SET enabled = ?, updated_at = ? WHERE id = ?`, boolInt(enabled), time.Now().UTC().Format(time.RFC3339Nano), id)
@@ -192,7 +202,9 @@ func (s *Store) DeleteWatch(ctx context.Context, id int64) error {
 
 // UpsertEpisode inserts a TVmaze episode or refreshes its schedule metadata.
 // Existing state, selected candidate, and queue job fields are deliberately
-// preserved, making repeated TVmaze syncs safe after a restart.
+// preserved, making repeated TVmaze syncs safe after a restart. updated_at
+// moves only when metadata changes: the UI reads a completed episode's
+// updated_at as its download-finished time.
 func (s *Store) UpsertEpisode(ctx context.Context, in EpisodeInput) (*Episode, error) {
 	if in.WatchID <= 0 || in.TVMazeEpisodeID <= 0 {
 		return nil, errors.New("watch_id and tvmaze_episode_id are required")
@@ -210,19 +222,31 @@ func (s *Store) UpsertEpisode(ctx context.Context, in EpisodeInput) (*Episode, e
 	if in.RuntimeMinutes != nil {
 		runtime = *in.RuntimeMinutes
 	}
+	// A NULL stored air_date is a row from before air dates were kept; filling
+	// it in is a backfill, not a metadata change.
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO series_episodes (
   watch_id, tvmaze_episode_id, season, episode, episode_name, air_timestamp,
-  runtime_minutes, state, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  air_date, airtime_known, runtime_minutes, state, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(watch_id, tvmaze_episode_id) DO UPDATE SET
   season = excluded.season,
   episode = excluded.episode,
   episode_name = excluded.episode_name,
   air_timestamp = excluded.air_timestamp,
+  air_date = excluded.air_date,
+  airtime_known = excluded.airtime_known,
   runtime_minutes = excluded.runtime_minutes,
-  updated_at = excluded.updated_at
-`, in.WatchID, in.TVMazeEpisodeID, in.Season, in.Episode, in.EpisodeName, air, runtime, state, now, now)
+  updated_at = CASE WHEN season IS NOT excluded.season
+      OR episode IS NOT excluded.episode
+      OR episode_name IS NOT excluded.episode_name
+      OR air_timestamp IS NOT excluded.air_timestamp
+      OR runtime_minutes IS NOT excluded.runtime_minutes
+      OR (air_date IS NOT NULL AND (air_date IS NOT excluded.air_date
+        OR airtime_known IS NOT excluded.airtime_known))
+    THEN excluded.updated_at ELSE updated_at END
+`, in.WatchID, in.TVMazeEpisodeID, in.Season, in.Episode, in.EpisodeName, air,
+		nullOrValue(in.AirDate), boolInt(in.AirtimeKnown), runtime, state, now, now)
 	if err != nil {
 		return nil, err
 	}
@@ -249,6 +273,22 @@ func (s *Store) GetEpisodeByTVMazeID(ctx context.Context, watchID, tvmazeEpisode
 
 func (s *Store) ListEpisodes(ctx context.Context, watchID int64) ([]Episode, error) {
 	rows, err := s.db.QueryContext(ctx, episodeSelect+` WHERE watch_id = ? ORDER BY season ASC, episode ASC, id ASC`, watchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanEpisodes(rows)
+}
+
+// ListUnfinishedJobEpisodes returns episodes of every watch whose queue job
+// has not reached a final episode state.
+func (s *Store) ListUnfinishedJobEpisodes(ctx context.Context) ([]Episode, error) {
+	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(finalEpisodeStates)), ", ")
+	args := make([]any, 0, len(finalEpisodeStates))
+	for _, state := range finalEpisodeStates {
+		args = append(args, state)
+	}
+	rows, err := s.db.QueryContext(ctx, episodeSelect+` WHERE job_id IS NOT NULL AND state NOT IN (`+placeholders+`) ORDER BY watch_id ASC, id ASC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -486,11 +526,11 @@ const watchSelect = `SELECT id, enabled, tvmaze_id, display_name, search_title,
  reference_webshare_ident, reference_filename, out_dir, series_folder,
  organize_by_season, quality_profile_json,
  start_mode, start_season, start_episode, fallback_policy,
- preferred_wait_seconds, next_check_at, last_checked_at, last_error, created_at,
- updated_at FROM series_watches`
+ preferred_wait_seconds, next_check_at, last_checked_at, last_error, show_status,
+ air_timezone, created_at, updated_at FROM series_watches`
 
 const episodeSelect = `SELECT id, watch_id, tvmaze_episode_id, season, episode,
- episode_name, air_timestamp, state, chosen_webshare_ident, chosen_filename,
+ episode_name, air_timestamp, air_date, airtime_known, state, chosen_webshare_ident, chosen_filename,
  selection_snapshot_json, attention_candidates_json, search_attempts, job_id,
  runtime_minutes, search_started_at, created_at, updated_at FROM series_episodes`
 
@@ -504,7 +544,7 @@ func scanWatch(row scanner) (Watch, error) {
 		&organizeBySeason, &w.QualityProfileJSON,
 		&w.StartMode, &w.StartSeason, &w.StartEpisode, &w.FallbackPolicy,
 		&w.PreferredWaitSeconds, &w.NextCheckAt,
-		&w.LastCheckedAt, &w.LastError, &w.CreatedAt, &w.UpdatedAt)
+		&w.LastCheckedAt, &w.LastError, &w.ShowStatus, &w.AirTimezone, &w.CreatedAt, &w.UpdatedAt)
 	w.Enabled = enabled != 0
 	w.OrganizeBySeason = organizeBySeason != 0
 	return w, err
@@ -524,11 +564,13 @@ func scanWatches(rows *sql.Rows) ([]Watch, error) {
 
 func scanEpisode(row scanner) (Episode, error) {
 	var e Episode
+	var airtimeKnown int
 	err := row.Scan(&e.ID, &e.WatchID, &e.TVMazeEpisodeID, &e.Season, &e.Episode,
-		&e.EpisodeName, &e.AirTimestamp, &e.State, &e.ChosenWebshareIdent,
+		&e.EpisodeName, &e.AirTimestamp, &e.AirDate, &airtimeKnown, &e.State, &e.ChosenWebshareIdent,
 		&e.ChosenFilename, &e.SelectionSnapshotJSON, &e.AttentionCandidatesJSON,
 		&e.SearchAttempts, &e.JobID, &e.RuntimeMinutes, &e.SearchStartedAt,
 		&e.CreatedAt, &e.UpdatedAt)
+	e.AirtimeKnown = airtimeKnown != 0
 	return e, err
 }
 

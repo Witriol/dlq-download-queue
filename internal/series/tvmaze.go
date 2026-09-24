@@ -42,11 +42,11 @@ func (c *TVMazeClient) SearchShows(ctx context.Context, query string) ([]TVMazeS
 	if showID, isURL, err := tvMazeShowID(query); err != nil {
 		return nil, err
 	} else if isURL {
-		var show TVMazeShow
-		if err := c.getJSON(ctx, "/shows/"+strconv.FormatInt(showID, 10), &show); err != nil {
+		show, err := c.Show(ctx, showID)
+		if err != nil {
 			return nil, err
 		}
-		return []TVMazeSearchResult{{Score: 1, Show: show}}, nil
+		return []TVMazeSearchResult{{Score: 1, Show: *show}}, nil
 	}
 	query = normalizeTVMazeSearchQuery(query)
 	if query == "" {
@@ -57,6 +57,17 @@ func (c *TVMazeClient) SearchShows(ctx context.Context, query string) ([]TVMazeS
 		return nil, err
 	}
 	return out, nil
+}
+
+func (c *TVMazeClient) Show(ctx context.Context, showID int64) (*TVMazeShow, error) {
+	if showID <= 0 {
+		return nil, errors.New("TVmaze show ID must be positive")
+	}
+	var show TVMazeShow
+	if err := c.getJSON(ctx, "/shows/"+strconv.FormatInt(showID, 10), &show); err != nil {
+		return nil, err
+	}
+	return &show, nil
 }
 
 // normalizeTVMazeSearchQuery makes release-style titles usable with TVmaze's

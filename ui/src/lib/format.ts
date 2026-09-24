@@ -125,6 +125,16 @@ export function formatDateTimeShort(value: string | undefined | null): string {
   });
 }
 
+/** "Wed 24. 9. 18:40" for an episode air time. */
+export function formatAirTime(value: string | undefined | null): string {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  const weekday = date.toLocaleDateString('en-GB', { weekday: 'short' });
+  const time = date.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return `${weekday} ${date.getDate()}. ${date.getMonth() + 1}. ${time}`;
+}
+
 export function localTimeZone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || 'local';
 }

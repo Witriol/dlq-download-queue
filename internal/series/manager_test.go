@@ -14,8 +14,11 @@ import (
 )
 
 type fakeTVMaze struct {
-	episodes []TVMazeEpisode
-	calls    int
+	episodes     []TVMazeEpisode
+	calls        int
+	showStatus   string
+	showTimezone string
+	showCalls    int
 }
 
 type blockingTVMaze struct {
@@ -38,6 +41,10 @@ func (f *parallelTVMaze) Episodes(context.Context, int64) ([]TVMazeEpisode, erro
 	return nil, nil
 }
 
+func (f *parallelTVMaze) Show(context.Context, int64) (*TVMazeShow, error) {
+	return &TVMazeShow{}, nil
+}
+
 func (f *blockingTVMaze) SearchShows(context.Context, string) ([]TVMazeSearchResult, error) {
 	return nil, nil
 }
@@ -48,6 +55,10 @@ func (f *blockingTVMaze) Episodes(context.Context, int64) ([]TVMazeEpisode, erro
 	return nil, nil
 }
 
+func (f *blockingTVMaze) Show(context.Context, int64) (*TVMazeShow, error) {
+	return &TVMazeShow{}, nil
+}
+
 func (f *fakeTVMaze) SearchShows(context.Context, string) ([]TVMazeSearchResult, error) {
 	return nil, nil
 }
@@ -55,6 +66,16 @@ func (f *fakeTVMaze) SearchShows(context.Context, string) ([]TVMazeSearchResult,
 func (f *fakeTVMaze) Episodes(context.Context, int64) ([]TVMazeEpisode, error) {
 	f.calls++
 	return f.episodes, nil
+}
+
+func (f *fakeTVMaze) Show(_ context.Context, id int64) (*TVMazeShow, error) {
+	f.showCalls++
+	// A global web channel has a null country.
+	channel := &tvMazeChannel{Name: "Web"}
+	if f.showTimezone != "" {
+		channel.Country = &tvMazeCountry{Timezone: f.showTimezone}
+	}
+	return &TVMazeShow{ID: id, Status: f.showStatus, WebChannel: channel}, nil
 }
 
 type fakeWebshare struct {
@@ -928,5 +949,285 @@ func TestManagerQueueRetryAttachesExistingSourceKeyJob(t *testing.T) {
 	jobs, err := jobService.ListJobs(ctx, "", true)
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("jobs=%v err=%v", jobs, err)
+	}
+}
+
+func countEvents(t *testing.T, store *Store, watchID int64, message string) int {
+	t.Helper()
+	events, err := store.ListEvents(context.Background(), watchID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, e := range events {
+		if e.Message == message {
+			count++
+		}
+	}
+	return count
+}
+
+func episodeState(t *testing.T, store *Store, watchID int64) string {
+	t.Helper()
+	episodes, err := store.ListEpisodes(context.Background(), watchID)
+	if err != nil || len(episodes) != 1 {
+		t.Fatalf("episodes = %+v, err = %v", episodes, err)
+	}
+	return episodes[0].State
+}
+
+// newQueuedEpisodeFixture returns a watch whose only episode has queued job #1
+// and whose next check is a day away.
+func newQueuedEpisodeFixture(t *testing.T) (*Manager, *Store, int64) {
+	t.Helper()
+	manager, store, _, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-MeGusta.mkv", 0)
+	if err := manager.processWatch(context.Background(), watchID); err != nil {
+		t.Fatal(err)
+	}
+	if state := episodeState(t, store, watchID); state != StateQueued {
+		t.Fatalf("episode state = %q; want queued", state)
+	}
+	return manager, store, watchID
+}
+
+func TestCheckDueSyncsJobStateWithoutWatchCheck(t *testing.T) {
+	manager, store, watchID := newQueuedEpisodeFixture(t)
+	ctx := context.Background()
+	tvmaze := manager.TVMaze.(*fakeTVMaze)
+	checks := tvmaze.calls
+	manager.JobState = func(context.Context, int64) (string, error) { return StateCompleted, nil }
+	for i := 0; i < 2; i++ {
+		if err := manager.CheckDue(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if state := episodeState(t, store, watchID); state != StateCompleted {
+		t.Fatalf("episode state = %q; want completed", state)
+	}
+	if tvmaze.calls != checks {
+		t.Fatalf("watch check ran: TVmaze calls %d -> %d", checks, tvmaze.calls)
+	}
+	if got := countEvents(t, store, watchID, "S01E02 job #1 completed"); got != 1 {
+		t.Fatalf("completion events = %d; want 1", got)
+	}
+}
+
+func TestCheckDueSkipsJobSyncDuringWatchCheck(t *testing.T) {
+	manager, store, watchID := newQueuedEpisodeFixture(t)
+	ctx := context.Background()
+	manager.JobState = func(context.Context, int64) (string, error) { return StateCompleted, nil }
+	if !manager.startWatchRun(watchID) {
+		t.Fatal("watch already running")
+	}
+	if err := manager.CheckDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if state := episodeState(t, store, watchID); state != StateQueued {
+		t.Fatalf("episode state during running check = %q; want queued", state)
+	}
+	manager.finishWatchRun(watchID)
+	if err := manager.CheckDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if state := episodeState(t, store, watchID); state != StateCompleted {
+		t.Fatalf("episode state after check = %q; want completed", state)
+	}
+}
+
+func TestManagerFetchesShowOnlyWhenIdle(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+
+	// The first check of a watch always fetches the show for its timezone.
+	upcoming, upcomingStore, _, upcomingID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-MeGusta.mkv", 0)
+	if err := upcomingStore.SetWatchShow(ctx, upcomingID, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	air := now.Add(12 * time.Hour)
+	number := 2
+	upcomingTVMaze := &fakeTVMaze{episodes: []TVMazeEpisode{{ID: 1002, Name: "Second", Season: 1, Number: &number, Airstamp: &air}}}
+	upcoming.TVMaze = upcomingTVMaze
+	if err := upcoming.processWatch(ctx, upcomingID); err != nil {
+		t.Fatal(err)
+	}
+	if upcomingTVMaze.showCalls != 0 {
+		t.Fatalf("show fetched with an upcoming episode: calls=%d", upcomingTVMaze.showCalls)
+	}
+
+	searching, searchingStore, _, searchingID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-Other.mkv", 0)
+	if err := searchingStore.SetWatchShow(ctx, searchingID, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := searching.processWatch(ctx, searchingID); err != nil {
+		t.Fatal(err)
+	}
+	if calls := searching.TVMaze.(*fakeTVMaze).showCalls; calls != 0 {
+		t.Fatalf("show fetched while searching: calls=%d", calls)
+	}
+
+	manager, store, watchID := newQueuedEpisodeFixture(t)
+	tvmaze := manager.TVMaze.(*fakeTVMaze)
+	tvmaze.showStatus = "Running"
+	baseline := tvmaze.showCalls
+	manager.JobState = func(context.Context, int64) (string, error) { return StateDownloading, nil }
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	if tvmaze.showCalls != baseline {
+		t.Fatalf("show fetched with an unfinished job: calls %d -> %d", baseline, tvmaze.showCalls)
+	}
+	manager.JobState = func(context.Context, int64) (string, error) { return StateCompleted, nil }
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	if tvmaze.showCalls != baseline+1 {
+		t.Fatalf("show calls when idle = %d; want %d", tvmaze.showCalls, baseline+1)
+	}
+	if got := watchNextCheck(t, store, watchID); !got.Equal(now.Add(metadataRefreshInterval)) {
+		t.Fatalf("next check = %v; want +24h", got)
+	}
+	if got, want := latestEventMessage(t, store, watchID), "no episode due; waiting for next season"; got != want {
+		t.Fatalf("event = %q; want %q", got, want)
+	}
+	view, err := manager.Get(ctx, watchID)
+	if err != nil || view.ShowStatus != "Running" {
+		t.Fatalf("view = %+v, err = %v", view, err)
+	}
+}
+
+func TestManagerSchedulesEndedShowWeekly(t *testing.T) {
+	manager, store, watchID := newQueuedEpisodeFixture(t)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	manager.TVMaze.(*fakeTVMaze).showStatus = tvmazeShowEnded
+	manager.JobState = func(context.Context, int64) (string, error) { return StateCompleted, nil }
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	if got := watchNextCheck(t, store, watchID); !got.Equal(now.Add(endedShowCheckInterval)) {
+		t.Fatalf("next check = %v; want +7d", got)
+	}
+	if got, want := latestEventMessage(t, store, watchID), "no episode due; series ended, next check 2026-09-25 12:00 UTC"; got != want {
+		t.Fatalf("event = %q; want %q", got, want)
+	}
+	view, err := manager.Get(ctx, watchID)
+	if err != nil || view.ShowStatus != tvmazeShowEnded {
+		t.Fatalf("view = %+v, err = %v", view, err)
+	}
+}
+
+func TestEpisodeViewUpdatedAtKeepsCompletionTime(t *testing.T) {
+	manager, store, watchID := newQueuedEpisodeFixture(t)
+	ctx := context.Background()
+	manager.JobState = func(context.Context, int64) (string, error) { return StateCompleted, nil }
+	if err := manager.CheckDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	view, err := manager.Get(ctx, watchID)
+	if err != nil || view.LastEpisode == nil || view.LastEpisode.UpdatedAt == "" {
+		t.Fatalf("view = %+v, err = %v", view, err)
+	}
+	completedAt := view.LastEpisode.UpdatedAt
+	encoded, err := json.Marshal(view.LastEpisode)
+	if err != nil || !strings.Contains(string(encoded), `"updated_at":"`+completedAt+`"`) {
+		t.Fatalf("episode JSON = %s, err = %v", encoded, err)
+	}
+	// A later check re-syncs unchanged TVmaze metadata.
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	episodes, err := store.ListEpisodes(ctx, watchID)
+	if err != nil || episodes[0].UpdatedAt != completedAt {
+		t.Fatalf("updated_at after metadata sync = %+v; want %s, err = %v", episodes, completedAt, err)
+	}
+}
+
+func TestManagerSearchableAtAirDate(t *testing.T) {
+	// Within the daily metadata refresh of the fixture's now (09-18 12:00).
+	placeholder := time.Date(2026, 9, 19, 8, 0, 0, 0, time.UTC)
+	runtime := 30
+	tests := []struct {
+		name     string
+		timezone string
+		airtime  string
+		want     time.Time
+	}{
+		{name: "date-only EDT", timezone: "America/New_York", want: time.Date(2026, 9, 19, 4, 0, 0, 0, time.UTC)},
+		{name: "date-only no timezone", want: time.Date(2026, 9, 19, 0, 0, 0, 0, time.UTC)},
+		{name: "airtime known", timezone: "America/New_York", airtime: "12:00", want: placeholder.Add(30 * time.Minute)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			manager, store, _, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-MeGusta.mkv", 0)
+			number := 2
+			manager.TVMaze = &fakeTVMaze{showTimezone: test.timezone, episodes: []TVMazeEpisode{{
+				ID: 1002, Name: "Second", Season: 1, Number: &number, Airdate: "2026-09-19",
+				Airtime: test.airtime, Airstamp: &placeholder, Runtime: &runtime,
+			}}}
+			if err := manager.processWatch(ctx, watchID); err != nil {
+				t.Fatal(err)
+			}
+			if got := watchNextCheck(t, store, watchID); !got.Equal(test.want) {
+				t.Fatalf("next check = %v; want %v", got, test.want)
+			}
+			if state := episodeState(t, store, watchID); state != StateWaitingRelease {
+				t.Fatalf("state before searchable = %q; want waiting_release", state)
+			}
+			manager.Now = func() time.Time { return test.want }
+			if err := manager.processWatch(ctx, watchID); err != nil {
+				t.Fatal(err)
+			}
+			if state := episodeState(t, store, watchID); state != StateQueued {
+				t.Fatalf("state at searchable time = %q; want queued", state)
+			}
+		})
+	}
+}
+
+func TestViewTreatsSearchableDateOnlyEpisodeAsLast(t *testing.T) {
+	ctx := context.Background()
+	manager, _, _, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-MeGusta.mkv", 0)
+	placeholder := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	number := 2
+	manager.TVMaze = &fakeTVMaze{episodes: []TVMazeEpisode{{ID: 1002, Name: "Second", Season: 1, Number: &number, Airdate: "2026-09-19", Airstamp: &placeholder}}}
+	manager.Now = func() time.Time { return time.Date(2026, 9, 19, 0, 30, 0, 0, time.UTC) }
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	view, err := manager.Get(ctx, watchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.NextEpisode != nil {
+		t.Fatalf("next episode = %+v; want nil before the placeholder airstamp", view.NextEpisode)
+	}
+	if view.LastEpisode == nil || view.LastEpisode.Episode != 2 {
+		t.Fatalf("last episode = %+v; want S01E02", view.LastEpisode)
+	}
+}
+
+func TestManagerFetchesTimezoneOnce(t *testing.T) {
+	ctx := context.Background()
+	manager, store, _, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-MeGusta.mkv", 0)
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	air := now.Add(48 * time.Hour)
+	number := 2
+	tvmaze := &fakeTVMaze{episodes: []TVMazeEpisode{{ID: 1002, Name: "Second", Season: 1, Number: &number, Airdate: "2026-09-20", Airstamp: &air}}}
+	manager.TVMaze = tvmaze
+	for i := 0; i < 2; i++ {
+		if err := manager.processWatch(ctx, watchID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if tvmaze.showCalls != 1 {
+		t.Fatalf("show calls = %d; want 1", tvmaze.showCalls)
+	}
+	watch, err := store.GetWatch(ctx, watchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !watch.AirTimezone.Valid || watch.AirTimezone.String != "" {
+		t.Fatalf("air timezone = %+v; want fetched and empty", watch.AirTimezone)
 	}
 }

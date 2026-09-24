@@ -27,6 +27,10 @@ func (emptyTVMaze) Episodes(context.Context, int64) ([]series.TVMazeEpisode, err
 	return []series.TVMazeEpisode{}, nil
 }
 
+func (emptyTVMaze) Show(context.Context, int64) (*series.TVMazeShow, error) {
+	return &series.TVMazeShow{}, nil
+}
+
 type emptyWebshare struct{}
 
 func (emptyWebshare) SearchVideos(context.Context, string, int, int) ([]resolver.WebshareSearchResult, error) {

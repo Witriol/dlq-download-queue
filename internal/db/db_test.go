@@ -16,6 +16,7 @@ func TestOpenMigratesSeriesOutputPathToFinalDirectory(t *testing.T) {
 	}
 	legacySchema := strings.Replace(schema, "  output_path_version INTEGER NOT NULL DEFAULT 2,\n", "", 1)
 	legacySchema = strings.Replace(legacySchema, "  status_changed_at TEXT,\n", "", 1)
+	legacySchema = strings.Replace(legacySchema, "  fallback_policy TEXT NOT NULL DEFAULT 'strict',\n", "  fallback_policy TEXT NOT NULL DEFAULT 'strict',\n  release_delay_seconds INTEGER NOT NULL DEFAULT 7200,\n", 1)
 	if _, err := legacy.Exec(legacySchema); err != nil {
 		legacy.Close()
 		t.Fatal(err)
@@ -46,16 +47,13 @@ INSERT INTO series_watches (
 	defer conn.Close()
 	var outDir, seriesFolder string
 	var version int
-	var releaseDelay int64
-	if err := conn.QueryRowContext(context.Background(), `SELECT out_dir, series_folder, output_path_version, release_delay_seconds FROM series_watches WHERE id = 1`).Scan(&outDir, &seriesFolder, &version, &releaseDelay); err != nil {
+	if err := conn.QueryRowContext(context.Background(), `SELECT out_dir, series_folder, output_path_version FROM series_watches WHERE id = 1`).Scan(&outDir, &seriesFolder, &version); err != nil {
 		t.Fatal(err)
 	}
 	if outDir != "/data/tvshows/futurama" || seriesFolder != "" || version != 2 {
 		t.Fatalf("migrated path = %q, folder = %q, version = %d", outDir, seriesFolder, version)
 	}
-	if releaseDelay != 21600 {
-		t.Fatalf("explicit six-hour release delay was changed to %d", releaseDelay)
-	}
+	assertNoReleaseDelayColumn(t, conn)
 	var changedAt string
 	if err := conn.QueryRowContext(context.Background(), `SELECT status_changed_at FROM jobs WHERE id = 1`).Scan(&changedAt); err != nil {
 		t.Fatal(err)
@@ -71,13 +69,36 @@ INSERT INTO series_watches (
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	if err := conn.QueryRowContext(context.Background(), `SELECT out_dir, series_folder, output_path_version, release_delay_seconds FROM series_watches WHERE id = 1`).Scan(&outDir, &seriesFolder, &version, &releaseDelay); err != nil {
+	if err := conn.QueryRowContext(context.Background(), `SELECT out_dir, series_folder, output_path_version FROM series_watches WHERE id = 1`).Scan(&outDir, &seriesFolder, &version); err != nil {
 		t.Fatal(err)
 	}
 	if outDir != "/data/tvshows/futurama" || seriesFolder != "" || version != 2 {
 		t.Fatalf("second open changed migrated path = %q, folder = %q, version = %d", outDir, seriesFolder, version)
 	}
-	if releaseDelay != 21600 {
-		t.Fatalf("second open changed explicit six-hour release delay to %d", releaseDelay)
+	assertNoReleaseDelayColumn(t, conn)
+}
+
+func TestOpenNewDatabaseHasNoReleaseDelayColumn(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "new.db")
+	for i := 0; i < 2; i++ {
+		conn, err := Open(dbPath)
+		if err != nil {
+			t.Fatalf("open #%d: %v", i+1, err)
+		}
+		assertNoReleaseDelayColumn(t, conn)
+		if err := conn.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func assertNoReleaseDelayColumn(t *testing.T, conn *sql.DB) {
+	t.Helper()
+	hasCol, err := tableHasColumn(context.Background(), conn, "series_watches", "release_delay_seconds")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasCol {
+		t.Fatal("series_watches.release_delay_seconds was not dropped")
 	}
 }

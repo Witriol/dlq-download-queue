@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { addJobsBatch, clearJobs, getEvents, getMeta, getSettings, listJobs, postAction, postGroupAction, updateSettings } from '$lib/api';
+  import { addJobsBatch, clearJobs, getEvents, getMeta, getSettings, listJobs, listSeries, postAction, postGroupAction, updateSettings } from '$lib/api';
   import { displayStatus } from '$lib/status';
   import { humanBytes, humanDuration, localTimeZone } from '$lib/format';
   import { countsFor, detectSite, parseUrls, sortJobs } from '$lib/job-utils';
@@ -14,6 +14,7 @@
 
   const statusOptions = ['', 'queued', 'resolving', 'downloading', 'paused', 'decrypting', 'completed', 'failed', 'decrypt_failed', 'deleted'];
   const outDirFavoritesStorageKey = 'dlq.outDirFavorites';
+  const seriesAttentionPollMs = 60_000;
 
   let jobs = [];
   let lastError = '';
@@ -63,6 +64,9 @@
   let showBrowser = false;
   let bodyLockState = null;
 
+  let seriesWatches = [];
+  let seriesPollTimer = null;
+
   $: counts = countsFor(jobs);
   $: activeCount = counts.queued + counts.resolving + counts.downloading + counts.paused + counts.decrypting;
   $: failedCount = counts.failed + counts.decrypt_failed;
@@ -95,6 +99,10 @@
   $: overallEtaHint = inProgressJobs.length > 0 && inProgressKnownSizeCount < inProgressJobs.length
     ? `${inProgressKnownSizeCount}/${inProgressJobs.length} sized`
     : '';
+  $: seriesAttentionCount = seriesWatches.reduce((total, watch) => {
+    const attention = Number(watch.attention_count) || 0;
+    return total + attention + (watch.last_error ? 1 : 0);
+  }, 0);
 
   async function refresh() {
     lastError = '';
@@ -104,6 +112,26 @@
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
     }
+  }
+
+  async function refreshSeriesAttention() {
+    try {
+      seriesWatches = await listSeries();
+    } catch {
+      // Series API may be unconfigured; keep the last known count rather than erroring the page.
+    }
+  }
+
+  function stopSeriesPoll() {
+    if (seriesPollTimer) {
+      clearInterval(seriesPollTimer);
+      seriesPollTimer = null;
+    }
+  }
+
+  function startSeriesPoll() {
+    stopSeriesPoll();
+    seriesPollTimer = setInterval(refreshSeriesAttention, seriesAttentionPollMs);
   }
 
   function stopTimer() {
@@ -438,9 +466,12 @@
     refresh();
     loadMeta();
     loadOutDirFavorites();
+    refreshSeriesAttention();
+    startSeriesPoll();
     return () => {
       stopTimer();
       stopLogsTimer();
+      stopSeriesPoll();
       window.removeEventListener('popstate', handlePopState);
       syncBodyScrollLock(false);
     };
@@ -460,7 +491,12 @@
       </div>
       <div class="app-tabs" role="tablist" aria-label="DLQ sections">
         <button class:active={activeTab === 'queue'} role="tab" aria-selected={activeTab === 'queue'} aria-controls="queue-panel" id="queue-tab" tabindex={activeTab === 'queue' ? 0 : -1} type="button" disabled={watcherModalOpen} on:click={() => selectTab('queue')} on:keydown={handleTabKey}>Queue</button>
-        <button class:active={activeTab === 'automations'} role="tab" aria-selected={activeTab === 'automations'} aria-controls="automations-panel" id="automations-tab" tabindex={activeTab === 'automations' ? 0 : -1} type="button" disabled={watcherModalOpen} on:click={() => selectTab('automations')} on:keydown={handleTabKey}>Automations</button>
+        <button class:active={activeTab === 'automations'} role="tab" aria-selected={activeTab === 'automations'} aria-controls="automations-panel" id="automations-tab" tabindex={activeTab === 'automations' ? 0 : -1} type="button" disabled={watcherModalOpen} on:click={() => selectTab('automations')} on:keydown={handleTabKey}>
+          Automations
+          {#if seriesAttentionCount > 0}
+            <span class="tab-badge" aria-label={`${seriesAttentionCount} automation${seriesAttentionCount === 1 ? '' : 's'} need${seriesAttentionCount === 1 ? 's' : ''} attention`}>{seriesAttentionCount}</span>
+          {/if}
+        </button>
       </div>
       {#if lastError}
         <span class="badge badge-error" role="alert" title={lastError}>Error: {lastError}</span>

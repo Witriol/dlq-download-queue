@@ -71,6 +71,8 @@ export type SeriesWatch = {
   next_episode_at?: string;
   created_at?: string;
   updated_at?: string;
+  /** TVmaze show status as returned: Running, Ended, To Be Determined, In Development. Empty when not fetched yet. */
+  show_status?: string;
 };
 
 export type SeriesEpisode = {
@@ -85,6 +87,8 @@ export type SeriesEpisode = {
   chosen_filename?: string;
   search_attempts?: number;
   job_id?: number;
+  /** Episode row updated_at; for completed episodes this is the download-finished time. */
+  updated_at?: string;
 };
 
 /** An episode waiting for a manual fallback decision and its persisted alternatives. */

@@ -5,12 +5,16 @@
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "check": "svelte-kit sync && svelte-check"
   },
   "devDependencies": {
     "@sveltejs/adapter-node": "latest",
     "@sveltejs/kit": "latest",
+    "@types/node": "latest",
     "svelte": "latest",
+    "svelte-check": "latest",
+    "typescript": "^5.9.3",
     "vite": "latest"
   }
 }

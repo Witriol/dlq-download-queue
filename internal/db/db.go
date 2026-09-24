@@ -76,7 +76,6 @@ CREATE TABLE IF NOT EXISTS series_watches (
   start_season INTEGER,
   start_episode INTEGER,
   fallback_policy TEXT NOT NULL DEFAULT 'strict',
-  release_delay_seconds INTEGER NOT NULL DEFAULT 7200,
   preferred_wait_seconds INTEGER NOT NULL DEFAULT 86400,
   next_check_at TEXT,
   last_checked_at TEXT,
@@ -226,8 +225,28 @@ END`); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
-	// series_watches.release_delay_seconds is no longer read; stored values are
-	// left untouched.
+	if err := ensureTableColumn(ctx, db, "series_watches", "show_status", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	// NULL air_timezone means the show was never fetched; '' means TVmaze
+	// has no channel timezone.
+	if err := ensureTableColumn(ctx, db, "series_watches", "air_timezone", "TEXT"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureTableColumn(ctx, db, "series_episodes", "air_date", "TEXT"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureTableColumn(ctx, db, "series_episodes", "airtime_known", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := dropTableColumn(ctx, db, "series_watches", "release_delay_seconds"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return db, nil
 }
 
@@ -276,12 +295,29 @@ func ensureColumn(ctx context.Context, db *sql.DB, name, colType string) error {
 }
 
 func ensureTableColumn(ctx context.Context, db *sql.DB, table, name, colType string) error {
-	rows, err := db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
-	if err != nil {
+	hasCol, err := tableHasColumn(ctx, db, table, name)
+	if err != nil || hasCol {
 		return err
 	}
+	_, err = db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN `+name+` `+colType)
+	return err
+}
+
+func dropTableColumn(ctx context.Context, db *sql.DB, table, name string) error {
+	hasCol, err := tableHasColumn(ctx, db, table, name)
+	if err != nil || !hasCol {
+		return err
+	}
+	_, err = db.ExecContext(ctx, `ALTER TABLE `+table+` DROP COLUMN `+name)
+	return err
+}
+
+func tableHasColumn(ctx context.Context, db *sql.DB, table, name string) (bool, error) {
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return false, err
+	}
 	defer rows.Close()
-	hasCol := false
 	for rows.Next() {
 		var cid int
 		var colName string
@@ -290,19 +326,11 @@ func ensureTableColumn(ctx context.Context, db *sql.DB, table, name, colType str
 		var dflt sql.NullString
 		var pk int
 		if err := rows.Scan(&cid, &colName, &ctype, &notnull, &dflt, &pk); err != nil {
-			return err
+			return false, err
 		}
 		if colName == name {
-			hasCol = true
-			break
+			return true, nil
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if !hasCol {
-		_, err = db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN `+name+` `+colType)
-		return err
-	}
-	return nil
+	return false, rows.Err()
 }

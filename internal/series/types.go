@@ -73,6 +73,8 @@ type Watch struct {
 	NextCheckAt            sql.NullString
 	LastCheckedAt          sql.NullString
 	LastError              sql.NullString
+	ShowStatus             string
+	AirTimezone            sql.NullString
 	CreatedAt              string
 	UpdatedAt              string
 }
@@ -87,6 +89,8 @@ type Episode struct {
 	Episode                 int
 	EpisodeName             string
 	AirTimestamp            sql.NullString
+	AirDate                 sql.NullString
+	AirtimeKnown            bool
 	State                   string
 	ChosenWebshareIdent     sql.NullString
 	ChosenFilename          sql.NullString
@@ -120,6 +124,8 @@ type EpisodeInput struct {
 	Episode         int
 	EpisodeName     string
 	AirTimestamp    *time.Time
+	AirDate         string
+	AirtimeKnown    bool
 	RuntimeMinutes  *int
 	State           string
 }
@@ -136,6 +142,31 @@ type TVMazeShow struct {
 	Premiered string   `json:"premiered,omitempty"`
 	Ended     string   `json:"ended,omitempty"`
 	URL       string   `json:"url,omitempty"`
+	// Network is set for broadcast shows, WebChannel for streaming ones.
+	Network    *tvMazeChannel `json:"network,omitempty"`
+	WebChannel *tvMazeChannel `json:"webChannel,omitempty"`
+}
+
+type tvMazeChannel struct {
+	Name    string         `json:"name,omitempty"`
+	Country *tvMazeCountry `json:"country,omitempty"`
+}
+
+// tvMazeCountry is null for global web channels.
+type tvMazeCountry struct {
+	Timezone string `json:"timezone,omitempty"`
+}
+
+// airTimezone returns the IANA timezone of the show's channel, or "" when
+// TVmaze has none.
+func (s *TVMazeShow) airTimezone() string {
+	for _, channel := range []*tvMazeChannel{s.Network, s.WebChannel} {
+		if channel == nil || channel.Country == nil || channel.Country.Timezone == "" {
+			continue
+		}
+		return channel.Country.Timezone
+	}
+	return ""
 }
 
 type TVMazeSearchResult struct {

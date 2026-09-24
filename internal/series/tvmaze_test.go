@@ -94,6 +94,26 @@ func TestTVMazeSearchURLFetchesExactShow(t *testing.T) {
 	}
 }
 
+func TestTVMazeShowReturnsStatus(t *testing.T) {
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/shows/123" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: ioNopCloser(`{"id":123,"name":"Star Trek","status":"Ended","network":null,"webChannel":{"name":"Hulu","country":{"timezone":"America/New_York"}}}`), Header: make(http.Header)}, nil
+	})
+	client := NewTVMazeClient("https://example.test", &http.Client{Transport: transport})
+	show, err := client.Show(context.Background(), 123)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if show.ID != 123 || show.Status != "Ended" || show.airTimezone() != "America/New_York" {
+		t.Fatalf("unexpected show: %+v", show)
+	}
+	if _, err := client.Show(context.Background(), 0); err == nil {
+		t.Fatal("expected invalid id error")
+	}
+}
+
 func TestTVMazeSearchURLRejectsInvalidShowID(t *testing.T) {
 	client := NewTVMazeClient("https://example.test", nil)
 	if _, err := client.SearchShows(context.Background(), "https://tvmaze.com/shows/not-a-number/foo"); err == nil {

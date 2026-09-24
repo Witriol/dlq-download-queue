@@ -1,6 +1,6 @@
 <script>
   import { onMount, tick } from 'svelte';
-  import { formatDateTime, formatDateTimeShort, localTimeZone, relativeTime } from '$lib/format';
+  import { formatAirTime, formatDateTime, formatDateTimeShort, localTimeZone, relativeTime } from '$lib/format';
   import { createSeries, getSeriesEvents, listSeries, listSeriesAttention, previewSeries, searchTVMaze, selectSeriesCandidate, seriesAction, updateSeries } from '$lib/api';
   import FolderBrowser from '$lib/components/FolderBrowser.svelte';
   import LogsModal from '$lib/components/LogsModal.svelte';
@@ -16,7 +16,6 @@
   export let onChanged = () => {};
   export let active = false;
 
-  const stepLabels = ['Reference', 'Review'];
   const defaultFieldModes = { resolution: 'required', codec: 'preferred', source: 'preferred', release_group: 'preferred', container: 'ignored' };
   const episodeDoneStates = new Set(['completed', 'skipped']);
 
@@ -28,7 +27,6 @@
   let showWizard = false;
   let wizardOpener = null;
   let wizardStep = 0;
-  let wizardFurthestStep = 0;
   let wizardBusy = false;
   let wizardError = '';
   let wizardNotice = '';
@@ -81,7 +79,7 @@
       initial_season: 1,
       initial_episode: 1,
       fallback_policy: 'balanced',
-      preferred_wait_seconds: 86400,
+      preferred_wait_seconds: 43200,
       series_folder: '',
       organize_by_season: true,
       quality_profile: {}
@@ -138,7 +136,6 @@
     tvmazeQuery = '';
     previewTotalCandidates = 0;
     wizardStep = 0;
-    wizardFurthestStep = 0;
     wizardError = '';
     wizardNotice = '';
     showWizard = true;
@@ -253,7 +250,6 @@
       draft.display_name = response?.display_name || draft.display_name;
       if (response?.error) wizardNotice = response.error;
       wizardStep = 1;
-      wizardFurthestStep = Math.max(wizardFurthestStep, 1);
       tvmazeQuery = draft.search_title || draft.display_name || '';
       if (tvmazeQuery) {
         await findShows();
@@ -503,13 +499,6 @@
     wizardStep = Math.max(0, wizardStep - 1);
   }
 
-  function goToWizardStep(step) {
-    if (wizardBusy || step < 0 || step > wizardFurthestStep || step === wizardStep) return;
-    wizardError = '';
-    wizardNotice = '';
-    wizardStep = step;
-  }
-
   function stepForward() {
     wizardError = '';
     if (wizardStep === 0) analyzeReference();
@@ -546,19 +535,71 @@
   }
 
   /** The episode to show in the list row: the in-flight one, else the upcoming one. */
+  let sortKey = 'next';
+  let sortDir = 'asc';
+
+  /** Enabled, nothing announced, and the last episode is done. */
+  function isIdle(watch) {
+    if (!watch.enabled || watch.next_episode) return false;
+    const last = watch.last_episode;
+    return !last || episodeDoneStates.has(last.state);
+  }
+
+  function toggleSort(key) {
+    if (sortKey === key) {
+      sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+      return;
+    }
+    sortKey = key;
+    sortDir = 'asc';
+  }
+
+  // Reactive so header markup re-renders when the sort changes.
+  $: sortIndicator = (key) => (sortKey !== key ? '' : sortDir === 'asc' ? ' ↑' : ' ↓');
+  $: ariaSort = (key) => (sortKey !== key ? 'none' : sortDir === 'asc' ? 'ascending' : 'descending');
+
+  function sortValue(watch, key) {
+    if (key === 'name') return watch.display_name || '';
+    // Idle and paused series have no meaningful time; null keeps them last.
+    if (!watch.enabled || isIdle(watch)) return null;
+    if (key === 'episode') {
+      const ep = episodeInFlight(watch);
+      return ep?.air_timestamp ? Date.parse(ep.air_timestamp) : null;
+    }
+    return watch.next_check_at ? Date.parse(watch.next_check_at) : null;
+  }
+
+  function sortWatches(list, key, dir) {
+    const sign = dir === 'asc' ? 1 : -1;
+    return [...list].sort((a, b) => {
+      const av = sortValue(a, key);
+      const bv = sortValue(b, key);
+      if (av == null || bv == null) {
+        return Number(av == null) - Number(bv == null);
+      }
+      if (key === 'name') {
+        return sign * av.localeCompare(bv);
+      }
+      return sign * (av - bv);
+    });
+  }
+
+  $: sortedWatches = sortWatches(watches, sortKey, sortDir);
+
   function episodeInFlight(watch) {
     const last = watch.last_episode;
     if (last && !episodeDoneStates.has(last.state)) return last;
     return watch.next_episode || last || null;
   }
 
-  function episodeStatus(ep) {
-    if (!ep) return null;
+  /** State line (13 px) for the episode shown in the row; ep may be null. */
+  function episodeStatus(watch, ep) {
+    if (!ep) return { label: 'No episodes yet', at: null };
     const attempts = Number(ep.search_attempts) || 1;
     switch (ep.state) {
       case 'waiting_release':
       case 'scheduled':
-        return { label: `Airs ${relativeTime(ep.air_timestamp)}`, at: ep.air_timestamp };
+        return { label: `Airs ${formatAirTime(ep.air_timestamp)} · ${relativeTime(ep.air_timestamp)}`, at: ep.air_timestamp };
       case 'searching':
       case 'preferred_not_found':
         return { label: `Searching · try ${attempts}`, at: null };
@@ -566,8 +607,10 @@
         return { label: 'Queued', at: null };
       case 'downloading':
         return { label: 'Downloading', at: null };
-      case 'completed':
-        return { label: 'Downloaded', at: null };
+      case 'completed': {
+        const suffix = watch.next_episode ? '' : (watch.show_status === 'Ended' ? ' · series ended' : ' · waiting for next season');
+        return { label: `Downloaded ${relativeTime(ep.updated_at)}${suffix}`, at: ep.updated_at };
+      }
       case 'needs_attention':
         return { label: 'Needs review', at: null };
       case 'failed':
@@ -583,15 +626,22 @@
     return 'active';
   }
 
-  function watchStatusLabel(watch) {
-    return { active: 'Active', paused: 'Paused', needs_attention: 'Needs review' }[statusTag(watch)];
+  /** Inline series-name badge; null when plain active (no badge shown). */
+  function seriesBadge(watch) {
+    const tag = statusTag(watch);
+    if (tag === 'paused') return { tag: 'paused', label: 'Paused', clickable: false, title: null };
+    if (tag === 'needs_attention') {
+      return { tag: 'needs_attention', label: 'Needs review', clickable: true, title: `Review ${watch.attention_count} warning${watch.attention_count === 1 ? '' : 's'}` };
+    }
+    if (watch.show_status === 'Ended') return { tag: 'ended', label: 'Ended', clickable: false, title: null };
+    if (isIdle(watch)) return { tag: 'idle', label: 'Off-season', clickable: false, title: 'No upcoming episode announced on TVmaze; checked daily' };
+    return null;
   }
 
-  function policyLabel(watch) {
-    const hours = Math.round(Number(watch.preferred_wait_seconds ?? 86400) / 3600);
-    if (watch.fallback_policy === 'balanced') return `Alternative after ${hours} h`;
-    if (watch.fallback_policy === 'manual') return `Ask me after ${hours} h`;
-    return 'Exact match only';
+  /** Next check cell: relative time, or Paused when the watch is disabled. */
+  function nextCheckLine(watch) {
+    if (!watch.enabled) return { label: 'Paused', at: null };
+    return { label: relativeTime(watch.next_check_at), at: watch.next_check_at };
   }
 
   async function refreshLogs() {
@@ -656,10 +706,16 @@
     return details.includes('different series title');
   }
 
+  // Mirrors the daemon's episodeOutDir: a picked season folder is replaced, not nested.
+  const seasonFolderPattern = /^(s|season[ ._-]?)\d{1,3}$/i;
+
   function outputExample(root, _folder, organizeBySeason, season = 1) {
-    const pieces = [String(root || '').replace(/\/+$/, '')];
-    if (organizeBySeason) pieces.push(`s${String(season).padStart(2, '0')}`);
-    return pieces.filter(Boolean).join('/') || 'Choose the series folder';
+    let base = String(root || '').replace(/\/+$/, '');
+    if (!base) return 'Choose the series folder';
+    if (!organizeBySeason) return base;
+    const slash = base.lastIndexOf('/');
+    if (slash > 0 && seasonFolderPattern.test(base.slice(slash + 1))) base = base.slice(0, slash);
+    return `${base}/s${String(season).padStart(2, '0')}`;
   }
 
   function stopRefreshTimer() {
@@ -745,38 +801,41 @@
     {:else}
       <div class="table-wrap">
         <table class="table automation-table">
-          <colgroup><col class="automation-col-status" /><col class="automation-col-series" /><col class="automation-col-next" /><col class="automation-col-path" /><col class="automation-col-actions" /></colgroup>
-          <thead><tr><th>Status</th><th>Series</th><th>Episode</th><th>Download path</th><th class="actions-col">Actions</th></tr></thead>
+          <colgroup><col class="automation-col-series" /><col class="automation-col-next" /><col class="automation-col-check" /><col class="automation-col-actions" /></colgroup>
+          <thead><tr><th aria-sort={ariaSort('name')}><button class="sort" type="button" on:click={() => toggleSort('name')}>Series{sortIndicator('name')}</button></th><th aria-sort={ariaSort('episode')}><button class="sort" type="button" on:click={() => toggleSort('episode')}>Episode{sortIndicator('episode')}</button></th><th aria-sort={ariaSort('next')}><button class="sort" type="button" on:click={() => toggleSort('next')}>Next check{sortIndicator('next')}</button></th><th class="actions-col">Actions</th></tr></thead>
           <tbody>
-            {#each watches as watch (watch.id)}
+            {#each sortedWatches as watch (watch.id)}
               {@const ep = episodeInFlight(watch)}
-              {@const epStatus = episodeStatus(ep)}
-              <tr data-status={statusTag(watch)} class:automation-row-paused={!watch.enabled}>
-                <td class="cell-status" data-label="Status">
-                  {#if statusTag(watch) === 'needs_attention'}
-                    <button type="button" class="status status-btn" data-status="needs_attention" title={`Review ${watch.attention_count} warning${watch.attention_count === 1 ? '' : 's'}`} on:click={() => openAttention(watch)}>{watchStatusLabel(watch)}</button>
-                  {:else}
-                    <span class="status" data-status={statusTag(watch)}>{watchStatusLabel(watch)}</span>
-                  {/if}
-                  <small class="automation-last-check">
-                    <span title={formatDateTimeShort(watch.last_checked_at)}>Checked {relativeTime(watch.last_checked_at)}</span>
-                    {#if watch.next_check_at}<span title={formatDateTimeShort(watch.next_check_at)}> · next {relativeTime(watch.next_check_at)}</span>{/if}
-                  </small>
-                </td>
+              {@const epStatus = episodeStatus(watch, ep)}
+              {@const badge = seriesBadge(watch)}
+              {@const nextCheck = nextCheckLine(watch)}
+              <tr data-status={statusTag(watch)} class:automation-row-paused={!watch.enabled} class:automation-row-idle={isIdle(watch)}>
                 <td class="cell-name automation-series-cell" data-label="Series">
-                  <strong>{watch.display_name}</strong>
-                  <small>{policyLabel(watch)}</small>
+                  <div class="automation-name-line">
+                    <strong>{watch.display_name}</strong>
+                    {#if badge}
+                      {#if badge.clickable}
+                        <button type="button" class="series-status status-btn" data-status={badge.tag} title={badge.title} on:click={() => openAttention(watch)}>{badge.label}</button>
+                      {:else}
+                        <span class="series-status" data-status={badge.tag}>{badge.label}</span>
+                      {/if}
+                    {/if}
+                  </div>
+                  <small class="automation-folder" title={watch.out_dir || 'No output folder'}>{watch.out_dir || 'No output folder'}</small>
                 </td>
                 <td class="automation-next-cell" data-label="Episode">
                   {#if ep}
                     <div class="automation-episode-line"><strong>{episodeCode(ep)}</strong><span>{episodeTitle(ep)}</span></div>
                     <time title={epStatus.at ? formatDateTimeShort(epStatus.at) : undefined}>{epStatus.label}</time>
                   {:else}
-                    <span class="automation-episode-empty">No episode scheduled</span>
+                    <span class="automation-episode-empty">{epStatus.label}</span>
                   {/if}
                   {#if watch.last_error}<div class="automation-warning">{watch.last_error}</div>{/if}
                 </td>
-                <td class="cell-path automation-path-cell" data-label="Download path" title={watch.out_dir || 'No output folder'}>{watch.out_dir || 'No output folder'}</td>
+                <td class="automation-check-cell" data-label="Next check">
+                  <strong title={nextCheck.at ? formatDateTimeShort(nextCheck.at) : undefined}>{nextCheck.label}</strong>
+                  {#if watch.last_checked_at}<small title={formatDateTimeShort(watch.last_checked_at)}>checked {relativeTime(watch.last_checked_at)}</small>{/if}
+                </td>
                 <td class="actions-col" data-label="Actions">
                   <div class="actions row-actions automation-actions">
                     <button class="btn icon-btn action-btn action-retry" type="button" title={busyAction === `${watch.id}:check-now` ? 'Checking…' : 'Check now'} aria-label={`Check ${watch.display_name} now`} on:click={() => doAction(watch, 'check-now')} disabled={!watch.enabled || busyAction === `${watch.id}:check-now`}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.7 6.3A8 8 0 1 0 20 12h-2a6 6 0 1 1-1.8-4.3L13 11h8V3z" /></svg></button>
@@ -796,9 +855,7 @@
 
 <SeriesWizard
   show={showWizard}
-  {stepLabels}
   bind:wizardStep
-  bind:wizardFurthestStep
   {wizardBusy}
   {wizardError}
   {wizardNotice}
@@ -820,7 +877,6 @@
   onClose={closeWizard}
   onNext={stepForward}
   onBack={stepBack}
-  onGoToStep={goToWizardStep}
   onActivate={activate}
   onFindShows={findShows}
   onChooseShow={chooseShow}

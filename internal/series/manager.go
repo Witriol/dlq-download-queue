@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,9 +26,13 @@ const (
 	defaultEpisodeRuntime    = 60 * time.Minute
 	searchGiveUpAfter        = 72 * time.Hour
 	minimumCheckInterval     = 5 * time.Minute
+	metadataRefreshInterval  = 24 * time.Hour
+	endedShowCheckInterval   = 7 * 24 * time.Hour
+	tvmazeShowEnded          = "Ended"
 	maxEventCandidates       = 10
 	maxEventsPerWatch        = 1000
 	eventTimeLayout          = "2006-01-02 15:04 UTC"
+	tvmazeAirDateLayout      = "2006-01-02"
 	queueReasonExact         = "exact"
 	queueReasonRetry         = "retry"
 	queueReasonManual        = "manual selection"
@@ -40,6 +45,10 @@ var searchTiers = []struct{ before, every time.Duration }{
 	{before: 24 * time.Hour, every: time.Hour},
 	{before: searchGiveUpAfter, every: 3 * time.Hour},
 }
+
+// finalEpisodeStates end an episode's job lifecycle. decrypt_failed is the
+// queue status, which syncJobState passes through unmapped.
+var finalEpisodeStates = []string{StateCompleted, StateFailed, StateSkipped, queue.StatusDecryptFail}
 
 var seasonFolderRe = regexp.MustCompile(`(?i)^(s|season[ ._-]?)\d{1,3}$`)
 
@@ -63,6 +72,7 @@ type SourceKeyQueueCreator interface {
 type TVMazeProvider interface {
 	SearchShows(context.Context, string) ([]TVMazeSearchResult, error)
 	Episodes(context.Context, int64) ([]TVMazeEpisode, error)
+	Show(context.Context, int64) (*TVMazeShow, error)
 }
 
 type WebshareProvider interface {
@@ -135,6 +145,7 @@ type EpisodeView struct {
 	ChosenFilename  string `json:"chosen_filename,omitempty"`
 	SearchAttempts  int    `json:"search_attempts,omitempty"`
 	JobID           int64  `json:"job_id,omitempty"`
+	UpdatedAt       string `json:"updated_at,omitempty"`
 }
 
 // AttentionEpisodeView is intentionally separate from WatchView: candidate
@@ -165,6 +176,7 @@ type WatchView struct {
 	NextCheckAt            string          `json:"next_check_at,omitempty"`
 	LastCheckedAt          string          `json:"last_checked_at,omitempty"`
 	LastError              string          `json:"last_error,omitempty"`
+	ShowStatus             string          `json:"show_status"`
 	Status                 string          `json:"status"`
 	AttentionCount         int             `json:"attention_count"`
 	NextEpisode            *EpisodeView    `json:"next_episode,omitempty"`
@@ -578,6 +590,9 @@ func (m *Manager) CheckNow(ctx context.Context, id int64) (*WatchView, error) {
 }
 
 func (m *Manager) CheckDue(ctx context.Context) error {
+	if err := m.syncUnfinishedJobs(ctx); err != nil {
+		return err
+	}
 	watches, err := m.Store.ListDueWatches(ctx, m.now(), 20)
 	if err != nil {
 		return err
@@ -597,6 +612,32 @@ func (m *Manager) CheckDue(ctx context.Context) error {
 		}()
 	}
 	wg.Wait()
+	return nil
+}
+
+// syncUnfinishedJobs mirrors queue job states into episodes between watch
+// checks, which may be a day apart. It reads only the local database. A watch
+// with a running check is skipped because that check syncs the same episodes
+// and would log the same transition again.
+func (m *Manager) syncUnfinishedJobs(ctx context.Context) error {
+	episodes, err := m.Store.ListUnfinishedJobEpisodes(ctx)
+	if err != nil {
+		return err
+	}
+	for start := 0; start < len(episodes); {
+		watchID := episodes[start].WatchID
+		end := start
+		for end < len(episodes) && episodes[end].WatchID == watchID {
+			end++
+		}
+		if m.startWatchRun(watchID) {
+			for i := start; i < end; i++ {
+				m.syncJobState(ctx, &episodes[i])
+			}
+			m.finishWatchRun(watchID)
+		}
+		start = end
+	}
 	return nil
 }
 
@@ -688,7 +729,7 @@ func (m *Manager) processWatchUnlocked(ctx context.Context, id int64) error {
 		if remote.Number == nil || remote.Season <= 0 || *remote.Number <= 0 || !shouldTrack(*w, remote) {
 			continue
 		}
-		_, err = m.Store.UpsertEpisode(ctx, EpisodeInput{WatchID: id, TVMazeEpisodeID: remote.ID, Season: remote.Season, Episode: *remote.Number, EpisodeName: remote.Name, AirTimestamp: remote.Airstamp, RuntimeMinutes: remote.Runtime, State: StateScheduled})
+		_, err = m.Store.UpsertEpisode(ctx, EpisodeInput{WatchID: id, TVMazeEpisodeID: remote.ID, Season: remote.Season, Episode: *remote.Number, EpisodeName: remote.Name, AirTimestamp: remote.Airstamp, AirDate: remote.Airdate, AirtimeKnown: remote.Airtime != "", RuntimeMinutes: remote.Runtime, State: StateScheduled})
 		if err != nil {
 			return err
 		}
@@ -701,6 +742,15 @@ func (m *Manager) processWatchUnlocked(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
+	// Date-only episodes need the channel timezone before the loop below.
+	showFetched := false
+	if !w.AirTimezone.Valid {
+		if err := m.refreshShow(ctx, w); err != nil {
+			return err
+		}
+		showFetched = true
+	}
+	airLoc := airLocation(w.AirTimezone.String)
 	var next time.Time
 	hasNext := false
 	considerNext := func(candidate time.Time) {
@@ -712,12 +762,18 @@ func (m *Manager) processWatchUnlocked(ctx context.Context, id int64) error {
 	// handled records whether this check searched or queued anything; a check
 	// that did neither still logs one summary line.
 	handled := false
+	// inFlight records a search or an unfinished job; only a watch with
+	// neither and no upcoming episode asks TVmaze whether the show ended.
+	inFlight := false
 	var nextAiring *Episode
 	var nextAiringEnd time.Time
 	for i := range stored {
 		ep := &stored[i]
 		if ep.JobID.Valid {
 			m.syncJobState(ctx, ep)
+			if !slices.Contains(finalEpisodeStates, ep.State) {
+				inFlight = true
+			}
 			continue
 		}
 		if ep.ChosenWebshareIdent.Valid {
@@ -725,21 +781,21 @@ func (m *Manager) processWatchUnlocked(ctx context.Context, id int64) error {
 				return err
 			}
 			handled = true
+			inFlight = true
 			continue
 		}
 		if ep.State == StateNeedsAttention {
 			continue
 		}
-		air, ok := parseNullTime(ep.AirTimestamp)
+		searchFrom, ok := searchableAt(ep, airLoc)
 		if !ok {
 			continue
 		}
-		airEnd := air.Add(episodeRuntime(ep))
-		if now.Before(airEnd) {
+		if now.Before(searchFrom) {
 			_ = m.Store.SetEpisodeState(ctx, ep.ID, StateWaitingRelease)
-			considerNext(airEnd)
-			if nextAiring == nil || airEnd.Before(nextAiringEnd) {
-				nextAiring, nextAiringEnd = ep, airEnd
+			considerNext(searchFrom)
+			if nextAiring == nil || searchFrom.Before(nextAiringEnd) {
+				nextAiring, nextAiringEnd = ep, searchFrom
 			}
 			continue
 		}
@@ -748,22 +804,47 @@ func (m *Manager) processWatchUnlocked(ctx context.Context, id int64) error {
 		if err != nil {
 			return err
 		}
+		// A queued selection leaves the episode in flight like a scheduled
+		// search; give-up and review end the search.
+		if ep.ChosenWebshareIdent.Valid {
+			inFlight = true
+		}
 		if scheduled {
 			considerNext(nextSearch)
+			inFlight = true
 		}
 	}
-	if !handled {
-		_, _ = m.Store.AddEvent(ctx, w.ID, 0, "info", noEpisodeDueMessage(nextAiring, nextAiringEnd), "")
+	idle := nextAiring == nil && !inFlight
+	if idle && !showFetched {
+		if err := m.refreshShow(ctx, w); err != nil {
+			return err
+		}
 	}
 	// Release searches wait for the known episode time. TVmaze metadata is
 	// still refreshed daily so schedule changes and newly announced earlier
-	// episodes are discovered without resuming the old six-hour polling.
-	metadataRefresh := now.Add(24 * time.Hour)
+	// episodes are discovered without resuming the old six-hour polling. An
+	// ended show only needs the rare revival or schedule correction noticed.
+	refresh := metadataRefreshInterval
+	ended := idle && w.ShowStatus == tvmazeShowEnded
+	if ended {
+		refresh = endedShowCheckInterval
+	}
+	metadataRefresh := now.Add(refresh)
 	if !hasNext || metadataRefresh.Before(next) {
 		next = metadataRefresh
 	}
 	if next.Before(now.Add(minimumCheckInterval)) {
 		next = now.Add(minimumCheckInterval)
+	}
+	if !handled {
+		message := noEpisodeDueMessage(nextAiring, nextAiringEnd)
+		switch {
+		case ended:
+			message = "no episode due; series ended, next check " + formatEventTime(next)
+		case idle:
+			message = "no episode due; waiting for next season"
+		}
+		_, _ = m.Store.AddEvent(ctx, w.ID, 0, "info", message, "")
 	}
 	return m.Store.UpdateWatchCheck(ctx, id, &now, &next, "")
 }
@@ -874,6 +955,48 @@ func nextSearchAt(w *Watch, windowStart, now time.Time) time.Time {
 		next = fallbackAt
 	}
 	return next
+}
+
+// refreshShow stores the TVmaze show status and channel timezone on w.
+func (m *Manager) refreshShow(ctx context.Context, w *Watch) error {
+	show, err := m.TVMaze.Show(ctx, w.TVMazeID)
+	if err != nil {
+		return err
+	}
+	airTimezone := show.airTimezone()
+	if err := m.Store.SetWatchShow(ctx, w.ID, show.Status, airTimezone); err != nil {
+		return err
+	}
+	w.ShowStatus = show.Status
+	w.AirTimezone = sql.NullString{String: airTimezone, Valid: true}
+	return nil
+}
+
+// airLocation falls back to UTC when the timezone is unknown or tzdata lacks
+// it.
+func airLocation(name string) *time.Location {
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}
+
+// searchableAt is when an episode's release can first exist. Without an
+// airtime (streaming drops) TVmaze's airstamp is a placeholder that can be
+// later than the real drop, so the air date's local midnight is used instead.
+func searchableAt(ep *Episode, airLoc *time.Location) (time.Time, bool) {
+	if !ep.AirtimeKnown && ep.AirDate.Valid {
+		day, err := time.ParseInLocation(tvmazeAirDateLayout, ep.AirDate.String, airLoc)
+		if err == nil {
+			return day, true
+		}
+	}
+	air, ok := parseNullTime(ep.AirTimestamp)
+	if !ok {
+		return time.Time{}, false
+	}
+	return air.Add(episodeRuntime(ep)), true
 }
 
 func episodeRuntime(ep *Episode) time.Duration {
@@ -1008,10 +1131,11 @@ func (m *Manager) view(ctx context.Context, w *Watch) (*WatchView, error) {
 		return nil, err
 	}
 	now := m.now()
-	v := &WatchView{ID: w.ID, Enabled: w.Enabled, TVMazeID: w.TVMazeID, DisplayName: w.DisplayName, SearchTitle: w.SearchTitle, ReferenceWebshareIdent: w.ReferenceWebshareIdent, ReferenceFilename: w.ReferenceFilename, OutDir: w.OutDir, SeriesFolder: w.SeriesFolder, OrganizeBySeason: w.OrganizeBySeason, QualityProfile: json.RawMessage(w.QualityProfileJSON), FallbackPolicy: w.FallbackPolicy, PreferredWaitSeconds: w.PreferredWaitSeconds, NextCheckAt: nullString(w.NextCheckAt), LastCheckedAt: nullString(w.LastCheckedAt), LastError: nullString(w.LastError), Status: "active", CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt}
+	v := &WatchView{ID: w.ID, Enabled: w.Enabled, TVMazeID: w.TVMazeID, DisplayName: w.DisplayName, SearchTitle: w.SearchTitle, ReferenceWebshareIdent: w.ReferenceWebshareIdent, ReferenceFilename: w.ReferenceFilename, OutDir: w.OutDir, SeriesFolder: w.SeriesFolder, OrganizeBySeason: w.OrganizeBySeason, QualityProfile: json.RawMessage(w.QualityProfileJSON), FallbackPolicy: w.FallbackPolicy, PreferredWaitSeconds: w.PreferredWaitSeconds, NextCheckAt: nullString(w.NextCheckAt), LastCheckedAt: nullString(w.LastCheckedAt), LastError: nullString(w.LastError), ShowStatus: w.ShowStatus, Status: "active", CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt}
 	if !w.Enabled {
 		v.Status = "paused"
 	}
+	airLoc := airLocation(w.AirTimezone.String)
 	for i := range eps {
 		ev := episodeView(eps[i])
 		if eps[i].State == StateNeedsAttention {
@@ -1021,7 +1145,10 @@ func (m *Manager) view(ctx context.Context, w *Watch) (*WatchView, error) {
 		if !ok {
 			continue
 		}
-		if air.After(now) {
+		// A date-only episode is already searched before its placeholder
+		// airstamp, so it must leave "next" as soon as it is searchable.
+		searchable, _ := searchableAt(&eps[i], airLoc)
+		if searchable.After(now) {
 			if v.NextEpisode == nil || air.Before(mustParseTime(v.NextEpisode.AirTimestamp)) {
 				copy := ev
 				v.NextEpisode = &copy
@@ -1062,6 +1189,7 @@ func (m *Manager) syncJobState(ctx context.Context, ep *Episode) {
 	if err := m.Store.SetEpisodeState(ctx, ep.ID, mapped); err != nil {
 		return
 	}
+	ep.State = mapped
 	level := "info"
 	if mapped == StateFailed || mapped == queue.StatusDecryptFail {
 		level = "error"
@@ -1312,7 +1440,7 @@ func attentionCandidates(snapshot sql.NullString) ([]CandidateView, error) {
 }
 
 func episodeView(e Episode) EpisodeView {
-	v := EpisodeView{ID: e.ID, TVMazeEpisodeID: e.TVMazeEpisodeID, Season: e.Season, Episode: e.Episode, EpisodeName: e.EpisodeName, AirTimestamp: nullString(e.AirTimestamp), State: e.State, SearchAttempts: e.SearchAttempts}
+	v := EpisodeView{ID: e.ID, TVMazeEpisodeID: e.TVMazeEpisodeID, Season: e.Season, Episode: e.Episode, EpisodeName: e.EpisodeName, AirTimestamp: nullString(e.AirTimestamp), State: e.State, SearchAttempts: e.SearchAttempts, UpdatedAt: e.UpdatedAt}
 	if e.ChosenFilename.Valid {
 		v.ChosenFilename = e.ChosenFilename.String
 	}

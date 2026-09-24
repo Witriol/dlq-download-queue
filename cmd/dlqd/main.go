@@ -9,6 +9,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+	// The Dockerfile does not install tzdata; series air dates need
+	// time.LoadLocation.
+	_ "time/tzdata"
 
 	"github.com/Witriol/dlq-download-queue/internal/api"
 	"github.com/Witriol/dlq-download-queue/internal/db"

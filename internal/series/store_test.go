@@ -115,3 +115,36 @@ func TestCreateWatchPreservesZeroDelays(t *testing.T) {
 		t.Fatalf("stored zero preferred wait changed to %d", watch.PreferredWaitSeconds)
 	}
 }
+
+func TestUpsertEpisodeAirDateBackfillKeepsUpdatedAt(t *testing.T) {
+	store, conn := newSeriesStore(t)
+	ctx := context.Background()
+	watchID, err := store.CreateWatch(ctx, &Watch{Enabled: true, TVMazeID: 1, DisplayName: "x", SearchTitle: "x", ReferenceWebshareIdent: "r", ReferenceFilename: "r.mkv", OutDir: "/data"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An episode stored before air dates were kept.
+	ep, err := store.UpsertEpisode(ctx, EpisodeInput{WatchID: watchID, TVMazeEpisodeID: 2, Season: 1, Episode: 1, AirtimeKnown: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backfill := EpisodeInput{WatchID: watchID, TVMazeEpisodeID: 2, Season: 1, Episode: 1, AirDate: "2026-09-20"}
+	backfilled, err := store.UpsertEpisode(ctx, backfill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backfilled.UpdatedAt != ep.UpdatedAt || backfilled.AirDate.String != "2026-09-20" || backfilled.AirtimeKnown {
+		t.Fatalf("backfill = %+v; want air date set, updated_at %s", backfilled, ep.UpdatedAt)
+	}
+	if _, err := conn.ExecContext(ctx, `UPDATE series_episodes SET updated_at = 'before' WHERE id = ?`, ep.ID); err != nil {
+		t.Fatal(err)
+	}
+	backfill.AirDate = "2026-09-21"
+	moved, err := store.UpsertEpisode(ctx, backfill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved.UpdatedAt == "before" {
+		t.Fatal("changed air date did not move updated_at")
+	}
+}
