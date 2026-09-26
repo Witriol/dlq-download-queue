@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Witriol/dlq-download-queue/internal/series"
 )
@@ -15,6 +17,7 @@ import (
 const (
 	defaultSeriesEventLimit = 50
 	maxSeriesEventLimit     = 500
+	refreshWriteTimeout     = 10 * time.Minute
 )
 
 func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
@@ -43,6 +46,35 @@ func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Printf("action=series_create id=%d tvmaze_id=%d name=%q out=%q", item.ID, item.TVMazeID, item.DisplayName, item.OutDir)
 		writeJSON(w, http.StatusCreated, item)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+type seriesRefreshResponse struct {
+	NextRefreshAt string `json:"next_refresh_at"`
+}
+
+func (s *Server) handleSeriesRefresh(w http.ResponseWriter, r *http.Request) {
+	if s.Series == nil {
+		writeErr(w, http.StatusServiceUnavailable, errors.New("series watcher not configured"))
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, seriesRefreshResponse{NextRefreshAt: s.Series.NextRefreshAt().UTC().Format(time.RFC3339)})
+	case http.MethodPost:
+		// Checking every watch can outlast the server's 15 s write timeout, and
+		// a client that gives up must not abort watches mid-check.
+		if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(refreshWriteTimeout)); err != nil {
+			log.Printf("series refresh: extend write deadline: %v", err)
+		}
+		if err := s.Series.RefreshAll(context.WithoutCancel(r.Context())); err != nil {
+			writeSeriesErr(w, err)
+			return
+		}
+		log.Printf("action=series_refresh")
+		writeJSON(w, http.StatusOK, seriesRefreshResponse{NextRefreshAt: s.Series.NextRefreshAt().UTC().Format(time.RFC3339)})
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}

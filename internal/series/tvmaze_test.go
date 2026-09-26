@@ -3,8 +3,10 @@ package series
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTVMazeSearchAndEpisodes(t *testing.T) {
@@ -38,6 +40,54 @@ func TestTVMazeSearchAndEpisodes(t *testing.T) {
 	}
 	if len(episodes) != 2 || episodes[0].Airstamp == nil || episodes[1].Number != nil {
 		t.Fatalf("unexpected episodes: %+v", episodes)
+	}
+}
+
+func TestTVMazeRetriesRateLimit(t *testing.T) {
+	tests := []struct {
+		name       string
+		retryAfter []string
+		want429    int
+		wantPauses []time.Duration
+		wantErr    bool
+	}{
+		{name: "default pause", retryAfter: []string{"", ""}, want429: 2, wantPauses: []time.Duration{tvmazeRateLimitPause, tvmazeRateLimitPause}},
+		{name: "retry-after", retryAfter: []string{"3"}, want429: 1, wantPauses: []time.Duration{3 * time.Second}},
+		{name: "retry-after capped", retryAfter: []string{"120"}, want429: 1, wantPauses: []time.Duration{tvmazeMaxRetryAfter}},
+		{name: "gives up", retryAfter: []string{"", "", ""}, want429: 3, wantPauses: []time.Duration{tvmazeRateLimitPause, tvmazeRateLimitPause}, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if calls <= test.want429 {
+					header := make(http.Header)
+					if value := test.retryAfter[calls-1]; value != "" {
+						header.Set("Retry-After", value)
+					}
+					return &http.Response{StatusCode: http.StatusTooManyRequests, Status: "429 Too Many Requests", Body: ioNopCloser(""), Header: header}, nil
+				}
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: ioNopCloser("[]"), Header: make(http.Header)}, nil
+			})
+			client := NewTVMazeClient("https://example.test", &http.Client{Transport: transport})
+			var pauses []time.Duration
+			client.sleep = func(_ context.Context, d time.Duration) error {
+				pauses = append(pauses, d)
+				return nil
+			}
+			_, err := client.Episodes(context.Background(), 123)
+			if test.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "429") {
+					t.Fatalf("err = %v; want 429 error", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(pauses, test.wantPauses) {
+				t.Fatalf("pauses = %v; want %v", pauses, test.wantPauses)
+			}
+		})
 	}
 }
 

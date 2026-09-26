@@ -220,6 +220,40 @@ func TestSeriesEventsEndpoint(t *testing.T) {
 	}
 }
 
+func TestSeriesRefreshEndpoint(t *testing.T) {
+	server := newSeriesServer(t)
+	get := httptest.NewRecorder()
+	server.Handler().ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/series/refresh", nil))
+	if get.Code != http.StatusOK {
+		t.Fatalf("get status = %d body=%s", get.Code, get.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(get.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := time.Parse(time.RFC3339, body["next_refresh_at"]); err != nil {
+		t.Fatalf("next_refresh_at = %q: %v", body["next_refresh_at"], err)
+	}
+
+	post := httptest.NewRecorder()
+	server.Handler().ServeHTTP(post, httptest.NewRequest(http.MethodPost, "/series/refresh", nil))
+	if post.Code != http.StatusOK {
+		t.Fatalf("post status = %d body=%s", post.Code, post.Body.String())
+	}
+
+	notAllowed := httptest.NewRecorder()
+	server.Handler().ServeHTTP(notAllowed, httptest.NewRequest(http.MethodDelete, "/series/refresh", nil))
+	if notAllowed.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("delete status = %d; want 405", notAllowed.Code)
+	}
+
+	unconfigured := httptest.NewRecorder()
+	(&Server{}).Handler().ServeHTTP(unconfigured, httptest.NewRequest(http.MethodGet, "/series/refresh", nil))
+	if unconfigured.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unconfigured status = %d; want 503", unconfigured.Code)
+	}
+}
+
 func jsonNumber(value int64) string {
 	data, _ := json.Marshal(value)
 	return string(data)

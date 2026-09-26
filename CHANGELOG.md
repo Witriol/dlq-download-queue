@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.9 - 2026-09-26
+
+- Series watches refresh TVmaze metadata together at a daily 06:00 UTC slot instead of 24h after each watch's own last check; ended shows use the first slot at least 7 days out.
+- Added `GET/POST /series/refresh`: the next refresh time, and a re-check of every enabled watch.
+- The Automations header shows the daily refresh time and a Check all button; the list column is now Next search (`next_search_at`, which includes retries of an active search).
+- The TVmaze client retries HTTP 429 responses twice after a short pause (honouring `Retry-After` up to 5 s) instead of failing the check.
+
 ## 0.2.8 - 2026-09-26
 
 - Added the automated series watcher: TVmaze schedule tracking, Webshare release search with quality profiles and fallback policies, manual candidate review, and a per-watch event log.

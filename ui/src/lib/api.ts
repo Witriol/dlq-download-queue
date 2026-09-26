@@ -1,4 +1,4 @@
-import type { BatchResult, JobView, Meta, SeriesAttentionEpisode, SeriesEpisode, SeriesPreview, SeriesWatch } from './types';
+import type { BatchResult, JobView, Meta, SeriesAttentionEpisode, SeriesEpisode, SeriesPreview, SeriesRefresh, SeriesWatch } from './types';
 
 async function extractError(res: Response): Promise<string> {
   const text = await res.text();
@@ -158,6 +158,18 @@ export async function listSeries(): Promise<SeriesWatch[]> {
   const response = await requestJson<unknown>('/api/series');
   const value = unwrapSeries<unknown>(response, 'series');
   return Array.isArray(value) ? value as SeriesWatch[] : [];
+}
+
+export async function getSeriesRefresh(): Promise<SeriesRefresh> {
+  return requestJson<SeriesRefresh>('/api/series/refresh');
+}
+
+export async function refreshSeries(): Promise<SeriesRefresh> {
+  return requestJson<SeriesRefresh>('/api/series/refresh', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}'
+  });
 }
 
 export type SeriesDraft = {

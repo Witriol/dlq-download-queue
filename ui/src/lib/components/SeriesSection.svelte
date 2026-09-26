@@ -1,7 +1,7 @@
 <script>
   import { onMount, tick } from 'svelte';
   import { formatAirTime, formatDateTime, formatDateTimeShort, localTimeZone, relativeTime } from '$lib/format';
-  import { createSeries, getSeriesEvents, listSeries, listSeriesAttention, previewSeries, searchTVMaze, selectSeriesCandidate, seriesAction, updateSeries } from '$lib/api';
+  import { createSeries, getSeriesEvents, getSeriesRefresh, listSeries, listSeriesAttention, previewSeries, refreshSeries, searchTVMaze, selectSeriesCandidate, seriesAction, updateSeries } from '$lib/api';
   import FolderBrowser from '$lib/components/FolderBrowser.svelte';
   import LogsModal from '$lib/components/LogsModal.svelte';
   import SeriesAttentionModal from '$lib/components/SeriesAttentionModal.svelte';
@@ -24,6 +24,9 @@
   let loadError = '';
   let actionError = '';
   let busyAction = '';
+  let refreshInfo = null;
+  let refreshBusy = false;
+  let refreshError = '';
   let showWizard = false;
   let wizardOpener = null;
   let wizardStep = 0;
@@ -117,6 +120,29 @@
       loadError = err instanceof Error ? err.message : String(err);
     } finally {
       loading = false;
+    }
+    loadRefreshInfo();
+  }
+
+  async function loadRefreshInfo() {
+    try {
+      refreshInfo = await getSeriesRefresh();
+    } catch {
+      // The refresh line just stays hidden until this succeeds.
+    }
+  }
+
+  async function refreshNow() {
+    refreshError = '';
+    refreshBusy = true;
+    try {
+      await refreshSeries();
+      await refresh();
+      onChanged();
+    } catch (err) {
+      refreshError = err instanceof Error ? err.message : String(err);
+    } finally {
+      refreshBusy = false;
     }
   }
 
@@ -566,7 +592,7 @@
       const ep = episodeInFlight(watch);
       return ep?.air_timestamp ? Date.parse(ep.air_timestamp) : null;
     }
-    return watch.next_check_at ? Date.parse(watch.next_check_at) : null;
+    return watch.next_search_at ? Date.parse(watch.next_search_at) : null;
   }
 
   function sortWatches(list, key, dir) {
@@ -634,20 +660,23 @@
       return { tag: 'needs_attention', label: 'Needs review', clickable: true, title: `Review ${watch.attention_count} warning${watch.attention_count === 1 ? '' : 's'}` };
     }
     if (watch.show_status === 'Ended') return { tag: 'ended', label: 'Ended', clickable: false, title: null };
-    if (isIdle(watch)) return { tag: 'idle', label: 'Off-season', clickable: false, title: 'No upcoming episode announced on TVmaze; checked daily' };
+    if (isIdle(watch)) return { tag: 'idle', label: 'Off-season', clickable: false, title: 'No upcoming episode announced on TVmaze; refreshed daily' };
     return null;
   }
 
-  /**
-   * Next check cell: relative time, or Paused when the watch is disabled. A
-   * check before the release search can start only refreshes the TVmaze
-   * schedule; the server re-checks daily even when the episode is days away.
-   */
-  function nextCheckLine(watch) {
-    if (!watch.enabled) return { label: 'Paused', at: null, searchAt: null };
-    const checkAt = watch.next_check_at ? Date.parse(watch.next_check_at) : NaN;
-    const searchAt = watch.next_search_at ? Date.parse(watch.next_search_at) : NaN;
-    return { label: relativeTime(watch.next_check_at), at: watch.next_check_at, searchAt: checkAt < searchAt ? watch.next_search_at : null };
+  /** Next search cell: relative time of the next release search, Paused when disabled, — when none is scheduled. */
+  function nextSearchLine(watch) {
+    if (!watch.enabled) return { label: 'Paused', at: null };
+    if (!watch.next_search_at) return { label: '—', at: null };
+    return { label: relativeTime(watch.next_search_at), at: watch.next_search_at };
+  }
+
+  /** "06:00" local time-of-day for the daily TVmaze schedule refresh. */
+  function refreshTimeOfDay(value) {
+    if (!value) return '—';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    return date.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit', hour12: false });
   }
 
   async function refreshLogs() {
@@ -787,8 +816,10 @@
       <div>
         <h2 id="series-heading">Automations</h2>
         <p class="muted">Searches every 15 min after an episode ends, then hourly, then every 3 h for up to 3 days.</p>
+        {#if watches.length > 0 && refreshInfo}<p class="muted" title={formatDateTimeShort(refreshInfo.next_refresh_at)}>TVmaze schedule refreshes daily at {refreshTimeOfDay(refreshInfo.next_refresh_at)} · next {relativeTime(refreshInfo.next_refresh_at)}</p>{/if}
       </div>
       <div class="actions">
+        {#if watches.length > 0}<button class="btn ghost" type="button" title="Refresh the TVmaze schedule and search due episodes for every series" on:click={refreshNow} disabled={refreshBusy}>{refreshBusy ? 'Checking…' : 'Check all'}</button>{/if}
         <button class="btn ghost" type="button" on:click={refresh} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</button>
         <button class="btn primary" type="button" on:click={openWizard}>Add series</button>
       </div>
@@ -796,6 +827,7 @@
 
     {#if loadError}<div class="series-alert error" role="alert">{loadError}</div>{/if}
     {#if actionError}<div class="series-alert error" role="alert">{actionError}</div>{/if}
+    {#if refreshError}<div class="series-alert error" role="alert">{refreshError}</div>{/if}
 
     {#if watches.length === 0 && !loading}
       <div class="series-empty">
@@ -808,13 +840,13 @@
       <div class="table-wrap">
         <table class="table automation-table">
           <colgroup><col class="automation-col-series" /><col class="automation-col-next" /><col class="automation-col-check" /><col class="automation-col-actions" /></colgroup>
-          <thead><tr><th aria-sort={ariaSort('name')}><button class="sort" type="button" on:click={() => toggleSort('name')}>Series{sortIndicator('name')}</button></th><th aria-sort={ariaSort('episode')}><button class="sort" type="button" on:click={() => toggleSort('episode')}>Episode{sortIndicator('episode')}</button></th><th aria-sort={ariaSort('next')}><button class="sort" type="button" on:click={() => toggleSort('next')}>Next check{sortIndicator('next')}</button></th><th class="actions-col">Actions</th></tr></thead>
+          <thead><tr><th aria-sort={ariaSort('name')}><button class="sort" type="button" on:click={() => toggleSort('name')}>Series{sortIndicator('name')}</button></th><th aria-sort={ariaSort('episode')}><button class="sort" type="button" on:click={() => toggleSort('episode')}>Episode{sortIndicator('episode')}</button></th><th aria-sort={ariaSort('next')}><button class="sort" type="button" on:click={() => toggleSort('next')}>Next search{sortIndicator('next')}</button></th><th class="actions-col">Actions</th></tr></thead>
           <tbody>
             {#each sortedWatches as watch (watch.id)}
               {@const ep = episodeInFlight(watch)}
               {@const epStatus = episodeStatus(watch, ep)}
               {@const badge = seriesBadge(watch)}
-              {@const nextCheck = nextCheckLine(watch)}
+              {@const nextSearch = nextSearchLine(watch)}
               <tr data-status={statusTag(watch)} class:automation-row-paused={!watch.enabled} class:automation-row-idle={isIdle(watch)}>
                 <td class="cell-name automation-series-cell" data-label="Series">
                   <div class="automation-name-line">
@@ -838,14 +870,13 @@
                   {/if}
                   {#if watch.last_error}<div class="automation-warning">{watch.last_error}</div>{/if}
                 </td>
-                <td class="automation-check-cell" data-label="Next check">
-                  <strong title={nextCheck.at ? formatDateTimeShort(nextCheck.at) : undefined}>{nextCheck.label}</strong>
-                  {#if nextCheck.searchAt}<small title="The next check only refreshes the TVmaze schedule">search {formatAirTime(nextCheck.searchAt)}</small>{/if}
+                <td class="automation-check-cell" data-label="Next search">
+                  <strong title={nextSearch.at ? formatDateTimeShort(nextSearch.at) : undefined}>{nextSearch.label}</strong>
                   {#if watch.last_checked_at}<small title={formatDateTimeShort(watch.last_checked_at)}>checked {relativeTime(watch.last_checked_at)}</small>{/if}
                 </td>
                 <td class="actions-col" data-label="Actions">
                   <div class="actions row-actions automation-actions">
-                    <button class="btn icon-btn action-btn action-retry" type="button" title={busyAction === `${watch.id}:check-now` ? 'Checking…' : 'Check now'} aria-label={`Check ${watch.display_name} now`} on:click={() => doAction(watch, 'check-now')} disabled={!watch.enabled || busyAction === `${watch.id}:check-now`}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.7 6.3A8 8 0 1 0 20 12h-2a6 6 0 1 1-1.8-4.3L13 11h8V3z" /></svg></button>
+                    <button class="btn icon-btn action-btn action-retry" type="button" title={busyAction === `${watch.id}:check-now` ? 'Checking…' : 'Check now'} aria-label={`Check ${watch.display_name} now`} on:click={() => doAction(watch, 'check-now')} disabled={!watch.enabled || refreshBusy || busyAction === `${watch.id}:check-now`}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.7 6.3A8 8 0 1 0 20 12h-2a6 6 0 1 1-1.8-4.3L13 11h8V3z" /></svg></button>
                     <button class="btn icon-btn action-btn action-logs" type="button" title="Logs" aria-label={`Open logs for ${watch.display_name}`} on:click={() => openLogs(watch)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h8l4 4v12H7z" stroke="currentColor" stroke-width="2" fill="none" /><path d="M15 4v4h4M10 13h6M10 16h6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" /></svg></button>
                     <button class="btn icon-btn action-btn" class:action-pause={watch.enabled} class:action-resume={!watch.enabled} type="button" title={watch.enabled ? 'Pause' : 'Resume'} aria-label={`${watch.enabled ? 'Pause' : 'Resume'} ${watch.display_name}`} on:click={() => doAction(watch, watch.enabled ? 'pause' : 'resume')} disabled={busyAction === `${watch.id}:${watch.enabled ? 'pause' : 'resume'}`}><svg viewBox="0 0 24 24" aria-hidden="true">{#if watch.enabled}<path d="M7 5h4v14H7zm6 0h4v14h-4z" />{:else}<path d="M8 5v14l11-7z" />{/if}</svg></button>
                     <button class="btn icon-btn action-btn action-edit" type="button" title="Edit" aria-label={`Edit ${watch.display_name}`} on:click={() => startEdit(watch)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 16.5-.5 4 4-.5L19 8.5 15.5 5zM17 3l4 4-1.5 1.5-4-4z" /></svg></button>

@@ -27,7 +27,7 @@ const (
 	defaultEpisodeRuntime    = 60 * time.Minute
 	searchGiveUpAfter        = 72 * time.Hour
 	minimumCheckInterval     = 5 * time.Minute
-	metadataRefreshInterval  = 24 * time.Hour
+	dailyRefreshAtUTC        = 6 * time.Hour
 	endedShowCheckInterval   = 7 * 24 * time.Hour
 	tvmazeShowEnded          = "Ended"
 	maxEventCandidates       = 10
@@ -649,10 +649,46 @@ func (m *Manager) CheckDue(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	m.runWatches(ctx, watchIDs(watches))
+	return nil
+}
+
+// NextRefreshAt is the next global TVmaze refresh slot after now.
+func (m *Manager) NextRefreshAt() time.Time {
+	return nextRefreshSlot(m.now())
+}
+
+// RefreshAll immediately re-checks every enabled watch, the same as a
+// scheduler run of each one. Unlike CheckNow's per-row recovery path, it
+// never resets exhausted release searches and does not log "manual check
+// requested".
+func (m *Manager) RefreshAll(ctx context.Context) error {
+	watches, err := m.Store.ListWatches(ctx, true)
+	if err != nil {
+		return err
+	}
+	for _, w := range watches {
+		m.addEvent(ctx, w.ID, 0, "info", "schedule refresh requested", "")
+	}
+	m.runWatches(ctx, watchIDs(watches))
+	return nil
+}
+
+func watchIDs(watches []Watch) []int64 {
+	ids := make([]int64, len(watches))
+	for i, w := range watches {
+		ids[i] = w.ID
+	}
+	return ids
+}
+
+// runWatches processes each watch id with the bounded concurrency shared by
+// CheckDue and RefreshAll.
+func (m *Manager) runWatches(ctx context.Context, ids []int64) {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, maxConcurrentWatchChecks)
-	for _, w := range watches {
-		watchID := w.ID
+	for _, id := range ids {
+		watchID := id
 		wg.Add(1)
 		sem <- struct{}{}
 		go func() {
@@ -664,7 +700,6 @@ func (m *Manager) CheckDue(ctx context.Context) error {
 		}()
 	}
 	wg.Wait()
-	return nil
 }
 
 // syncUnfinishedJobs mirrors queue job states into episodes between watch
@@ -923,15 +958,16 @@ func (m *Manager) processWatchUnlocked(ctx context.Context, id int64) error {
 		}
 	}
 	// Release searches wait for the known episode time. TVmaze metadata is
-	// still refreshed daily so schedule changes and newly announced earlier
-	// episodes are discovered without resuming the old six-hour polling. An
-	// ended show only needs the rare revival or schedule correction noticed.
-	refresh := metadataRefreshInterval
+	// refreshed for all watches together at the daily slot so schedule
+	// changes and newly announced earlier episodes are discovered. An ended
+	// show only needs the rare revival or schedule correction noticed.
 	ended := idle && w.ShowStatus == tvmazeShowEnded
+	// A slot inside the minimum interval would re-run this check minutes later.
+	metadataRefresh := nextRefreshSlot(now.Add(minimumCheckInterval))
 	if ended {
-		refresh = endedShowCheckInterval
+		// First slot at or after the interval; nextRefreshSlot is exclusive.
+		metadataRefresh = nextRefreshSlot(now.Add(endedShowCheckInterval).Add(-time.Nanosecond))
 	}
-	metadataRefresh := now.Add(refresh)
 	if !hasNext || metadataRefresh.Before(next) {
 		next = metadataRefresh
 	}
@@ -1034,6 +1070,17 @@ func (m *Manager) searchRelease(ctx context.Context, w *Watch, ep *Episode, prof
 	message := fmt.Sprintf("%s search #%d: %d results, %d accepted, %d exact; next search %s", code, attempts, len(scored), len(accepted), exactCount, formatEventTime(next))
 	m.addEvent(ctx, w.ID, ep.ID, "info", message, details)
 	return next, true, nil
+}
+
+// nextRefreshSlot returns the first daily TVmaze refresh slot, at
+// dailyRefreshAtUTC UTC, strictly after t.
+func nextRefreshSlot(t time.Time) time.Time {
+	t = t.UTC()
+	slot := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC).Add(dailyRefreshAtUTC)
+	for !slot.After(t) {
+		slot = slot.Add(24 * time.Hour)
+	}
+	return slot
 }
 
 // nextSearchAt applies the search tiers, stops at the give-up time, and moves
@@ -1291,6 +1338,7 @@ func (m *Manager) view(ctx context.Context, w *Watch) (*WatchView, error) {
 		v.Status = "paused"
 	}
 	airLoc := airLocation(w.AirTimezone.String)
+	activeSearch := false
 	for i := range eps {
 		ev := episodeView(eps[i])
 		if eps[i].State == StateNeedsAttention {
@@ -1303,6 +1351,11 @@ func (m *Manager) view(ctx context.Context, w *Watch) (*WatchView, error) {
 		// A date-only episode is already searched before its placeholder
 		// airstamp, so it must leave "next" as soon as it is searchable.
 		searchable, _ := searchableAt(&eps[i], airLoc)
+		// Mirrors processWatchUnlocked: every check searches such an episode,
+		// including one whose first search a failed check never reached.
+		if !eps[i].JobID.Valid && !eps[i].ChosenWebshareIdent.Valid && eps[i].State != StateNeedsAttention && !searchable.After(now) {
+			activeSearch = true
+		}
 		if searchable.After(now) {
 			if v.NextEpisode == nil || air.Before(mustParseTime(v.NextEpisode.AirTimestamp)) {
 				copy := ev
@@ -1315,6 +1368,9 @@ func (m *Manager) view(ctx context.Context, w *Watch) (*WatchView, error) {
 				v.LastEpisode = &copy
 			}
 		}
+	}
+	if activeSearch {
+		v.NextSearchAt = v.NextCheckAt
 	}
 	if v.AttentionCount > 0 && w.Enabled {
 		v.Status = StateNeedsAttention

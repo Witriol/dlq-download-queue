@@ -20,6 +20,7 @@ type fakeTVMaze struct {
 	showStatus   string
 	showTimezone string
 	showCalls    int
+	err          error
 }
 
 type blockingTVMaze struct {
@@ -66,6 +67,9 @@ func (f *fakeTVMaze) SearchShows(context.Context, string) ([]TVMazeSearchResult,
 
 func (f *fakeTVMaze) Episodes(context.Context, int64) ([]TVMazeEpisode, error) {
 	f.calls++
+	if f.err != nil {
+		return nil, f.err
+	}
 	return f.episodes, nil
 }
 
@@ -255,6 +259,52 @@ func TestManagerSearchTiersByWindowAge(t *testing.T) {
 		if got, want := watchNextCheck(t, store, watchID), now.Add(test.interval); !got.Equal(want) {
 			t.Fatalf("age %v next check = %v; want %v", test.age, got, want)
 		}
+	}
+}
+
+func TestWatchViewNextSearchAtDuringActiveSearch(t *testing.T) {
+	manager, _, _, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-Other.mkv", 0)
+	ctx := context.Background()
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	view, err := manager.Get(ctx, watchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No exact candidate under FallbackStrict leaves the episode in
+	// preferred_not_found with no job or chosen release: every check
+	// re-searches it, so its next search is the watch's own next check.
+	if view.NextSearchAt == "" || view.NextSearchAt != view.NextCheckAt {
+		t.Fatalf("next search at = %q; want next_check_at %q", view.NextSearchAt, view.NextCheckAt)
+	}
+}
+
+func TestWatchViewNextSearchAtAfterFailedCheck(t *testing.T) {
+	manager, store, _, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-Other.mkv", 0)
+	ctx := context.Background()
+	start := manager.now()
+	air := start.Add(-48 * time.Hour)
+	manager.Now = func() time.Time { return air.Add(-time.Hour) }
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	if state := episodeState(t, store, watchID); state != StateWaitingRelease {
+		t.Fatalf("episode state = %q; want waiting_release", state)
+	}
+
+	// The episode became searchable, but the check failed before searching it.
+	manager.TVMaze.(*fakeTVMaze).err = errors.New("tvmaze down")
+	manager.Now = func() time.Time { return air.Add(defaultEpisodeRuntime + 10*time.Minute) }
+	if err := manager.processWatch(ctx, watchID); err == nil {
+		t.Fatal("check succeeded; want TVmaze error")
+	}
+	view, err := manager.Get(ctx, watchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.NextSearchAt == "" || view.NextSearchAt != view.NextCheckAt {
+		t.Fatalf("next search at = %q; want next_check_at %q", view.NextSearchAt, view.NextCheckAt)
 	}
 }
 
@@ -806,8 +856,65 @@ func TestManagerRefreshesMetadataDailyForDistantEpisode(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, ok := parseNullTime(watch.NextCheckAt)
-	if want := now.Add(24 * time.Hour); !ok || !got.Equal(want) {
+	if want := time.Date(2026, 9, 19, 6, 0, 0, 0, time.UTC); !ok || !got.Equal(want) {
 		t.Fatalf("next metadata refresh = %v; want %v", got, want)
+	}
+}
+
+func TestNextRefreshSlot(t *testing.T) {
+	tests := []struct {
+		name string
+		in   time.Time
+		want time.Time
+	}{
+		{name: "before slot", in: time.Date(2026, 9, 18, 1, 4, 0, 0, time.UTC), want: time.Date(2026, 9, 18, 6, 0, 0, 0, time.UTC)},
+		{name: "at slot", in: time.Date(2026, 9, 18, 6, 0, 0, 0, time.UTC), want: time.Date(2026, 9, 19, 6, 0, 0, 0, time.UTC)},
+		{name: "after slot", in: time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC), want: time.Date(2026, 9, 19, 6, 0, 0, 0, time.UTC)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := nextRefreshSlot(test.in); !got.Equal(test.want) {
+				t.Fatalf("nextRefreshSlot(%v) = %v; want %v", test.in, got, test.want)
+			}
+		})
+	}
+}
+
+func TestManagerNextRefreshAt(t *testing.T) {
+	now := time.Date(2026, 9, 18, 1, 4, 0, 0, time.UTC)
+	manager := &Manager{Now: func() time.Time { return now }}
+	want := time.Date(2026, 9, 18, 6, 0, 0, 0, time.UTC)
+	if got := manager.NextRefreshAt(); !got.Equal(want) {
+		t.Fatalf("NextRefreshAt = %v; want %v", got, want)
+	}
+}
+
+func TestManagerAlignsCheckedWatchToSameDaySlot(t *testing.T) {
+	manager, store, _, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-MeGusta.mkv", 0)
+	checkedAt := time.Date(2026, 9, 18, 1, 4, 0, 0, time.UTC)
+	manager.Now = func() time.Time { return checkedAt }
+	if err := manager.processWatch(context.Background(), watchID); err != nil {
+		t.Fatal(err)
+	}
+	if state := episodeState(t, store, watchID); state != StateQueued {
+		t.Fatalf("episode state = %q; want queued", state)
+	}
+	want := time.Date(2026, 9, 18, 6, 0, 0, 0, time.UTC)
+	if got := watchNextCheck(t, store, watchID); !got.Equal(want) {
+		t.Fatalf("next check = %v; want same-day slot %v", got, want)
+	}
+}
+
+func TestManagerSkipsSlotWithinMinimumInterval(t *testing.T) {
+	manager, store, _, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-MeGusta.mkv", 0)
+	checkedAt := time.Date(2026, 9, 18, 5, 58, 0, 0, time.UTC)
+	manager.Now = func() time.Time { return checkedAt }
+	if err := manager.processWatch(context.Background(), watchID); err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, 9, 19, 6, 0, 0, 0, time.UTC)
+	if got := watchNextCheck(t, store, watchID); !got.Equal(want) {
+		t.Fatalf("next check = %v; want next day's slot %v", got, want)
 	}
 }
 
@@ -917,6 +1024,43 @@ func TestManagerCheckDueRunsDifferentWatchesInParallel(t *testing.T) {
 	close(tvmaze.release)
 	if err := <-done; err != nil {
 		t.Fatalf("CheckDue: %v", err)
+	}
+}
+
+func TestManagerRefreshAllProcessesEnabledSkipsPaused(t *testing.T) {
+	store, _ := newSeriesStore(t)
+	ctx := context.Background()
+	enabledID, err := store.CreateWatch(ctx, &Watch{
+		Enabled: true, TVMazeID: 42, DisplayName: "Enabled", SearchTitle: "Enabled",
+		ReferenceWebshareIdent: "reference", ReferenceFilename: "Enabled.S01E01.mkv", OutDir: "/data",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pausedID, err := store.CreateWatch(ctx, &Watch{
+		Enabled: false, TVMazeID: 42, DisplayName: "Paused", SearchTitle: "Paused",
+		ReferenceWebshareIdent: "reference", ReferenceFilename: "Paused.S01E01.mkv", OutDir: "/data",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// CreateWatch always starts a watch enabled; pause it explicitly.
+	if err := store.SetWatchEnabled(ctx, pausedID, false); err != nil {
+		t.Fatal(err)
+	}
+	tvmaze := &fakeTVMaze{}
+	manager := &Manager{Store: store, TVMaze: tvmaze, AllowedRoots: []string{"/data"}}
+	if err := manager.RefreshAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if tvmaze.calls != 1 {
+		t.Fatalf("TVmaze calls = %d; want 1 (paused watch skipped)", tvmaze.calls)
+	}
+	if got := countEvents(t, store, enabledID, "schedule refresh requested"); got != 1 {
+		t.Fatalf("enabled watch refresh events = %d; want 1", got)
+	}
+	if got := countEvents(t, store, pausedID, "schedule refresh requested"); got != 0 {
+		t.Fatalf("paused watch refresh events = %d; want 0", got)
 	}
 }
 
@@ -1122,8 +1266,8 @@ func TestManagerFetchesShowOnlyWhenIdle(t *testing.T) {
 	if tvmaze.showCalls != baseline+1 {
 		t.Fatalf("show calls when idle = %d; want %d", tvmaze.showCalls, baseline+1)
 	}
-	if got := watchNextCheck(t, store, watchID); !got.Equal(now.Add(metadataRefreshInterval)) {
-		t.Fatalf("next check = %v; want +24h", got)
+	if got, want := watchNextCheck(t, store, watchID), nextRefreshSlot(now); !got.Equal(want) {
+		t.Fatalf("next check = %v; want %v", got, want)
 	}
 	if got, want := latestEventMessage(t, store, watchID), "no episode due; waiting for next season"; got != want {
 		t.Fatalf("event = %q; want %q", got, want)
@@ -1137,16 +1281,18 @@ func TestManagerFetchesShowOnlyWhenIdle(t *testing.T) {
 func TestManagerSchedulesEndedShowWeekly(t *testing.T) {
 	manager, store, watchID := newQueuedEpisodeFixture(t)
 	ctx := context.Background()
-	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
 	manager.TVMaze.(*fakeTVMaze).showStatus = tvmazeShowEnded
 	manager.JobState = func(context.Context, int64) (JobStatus, error) { return JobStatus{Status: StateCompleted}, nil }
 	if err := manager.processWatch(ctx, watchID); err != nil {
 		t.Fatal(err)
 	}
-	if got := watchNextCheck(t, store, watchID); !got.Equal(now.Add(endedShowCheckInterval)) {
-		t.Fatalf("next check = %v; want +7d", got)
+	// now (09-18 12:00) + 7d is 09-25 12:00, past that day's 06:00 slot, so
+	// the next check aligns to the slot on 09-26 instead.
+	want := time.Date(2026, 9, 26, 6, 0, 0, 0, time.UTC)
+	if got := watchNextCheck(t, store, watchID); !got.Equal(want) {
+		t.Fatalf("next check = %v; want slot at or after +7d %v", got, want)
 	}
-	if got, want := latestEventMessage(t, store, watchID), "no episode due; series ended, next check 2026-09-25 12:00 UTC"; got != want {
+	if got, want := latestEventMessage(t, store, watchID), "no episode due; series ended, next check 2026-09-26 06:00 UTC"; got != want {
 		t.Fatalf("event = %q; want %q", got, want)
 	}
 	view, err := manager.Get(ctx, watchID)
@@ -1204,11 +1350,18 @@ func TestManagerSearchableAtAirDate(t *testing.T) {
 				ID: 1002, Name: "Second", Season: 1, Number: &number, Airdate: "2026-09-19",
 				Airtime: test.airtime, Airstamp: &placeholder, Runtime: &runtime,
 			}}}
+			checkedAt := manager.now()
 			if err := manager.processWatch(ctx, watchID); err != nil {
 				t.Fatal(err)
 			}
-			if got := watchNextCheck(t, store, watchID); !got.Equal(test.want) {
-				t.Fatalf("next check = %v; want %v", got, test.want)
+			// The daily refresh slot caps next_check_at when it lands before the
+			// episode's own searchable time (the "airtime known" case here).
+			wantNextCheck := test.want
+			if slot := nextRefreshSlot(checkedAt); slot.Before(wantNextCheck) {
+				wantNextCheck = slot
+			}
+			if got := watchNextCheck(t, store, watchID); !got.Equal(wantNextCheck) {
+				t.Fatalf("next check = %v; want %v", got, wantNextCheck)
 			}
 			view, err := manager.Get(ctx, watchID)
 			if err != nil {

@@ -10,9 +10,20 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const DefaultTVMazeBaseURL = "https://api.tvmaze.com"
+
+// TVmaze allows at least 20 calls per 10 s per IP and answers 429 above that;
+// its docs ask clients to retry after a short pause (https://www.tvmaze.com/api).
+// Pauses stay short so a per-watch Check now usually finishes within the
+// API's 15 s write timeout.
+const (
+	tvmazeRateLimitRetries = 2
+	tvmazeRateLimitPause   = 5 * time.Second
+	tvmazeMaxRetryAfter    = 5 * time.Second
+)
 
 // TVMazeClient is a small context-aware client for the two endpoints needed
 // when creating and synchronizing a watch. It does not cache responses; the
@@ -21,6 +32,8 @@ type TVMazeClient struct {
 	BaseURL    string
 	HTTPClient *http.Client
 	UserAgent  string
+	// sleep replaces the rate-limit pause in tests.
+	sleep func(context.Context, time.Duration) error
 }
 
 func NewTVMazeClient(baseURL string, httpClient *http.Client) *TVMazeClient {
@@ -142,9 +155,22 @@ func (c *TVMazeClient) getJSON(ctx context.Context, path string, dst any) error 
 	if client == nil {
 		client = http.DefaultClient
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
+	var resp *http.Response
+	for attempt := 0; ; attempt++ {
+		resp, err = client.Do(req)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode != http.StatusTooManyRequests || attempt == tvmazeRateLimitRetries {
+			break
+		}
+
+		pause := rateLimitPause(resp.Header)
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+		resp.Body.Close()
+		if err := c.wait(ctx, pause); err != nil {
+			return err
+		}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
@@ -160,4 +186,29 @@ func (c *TVMazeClient) getJSON(ctx context.Context, path string, dst any) error 
 		return fmt.Errorf("decode TVmaze response: %w", err)
 	}
 	return nil
+}
+
+// rateLimitPause honours a Retry-After in seconds, capped so a long hint does
+// not stall a check; TVmaze does not document whether it sends one.
+func rateLimitPause(header http.Header) time.Duration {
+	seconds, err := strconv.Atoi(strings.TrimSpace(header.Get("Retry-After")))
+	if err != nil || seconds <= 0 {
+		return tvmazeRateLimitPause
+	}
+	return min(time.Duration(seconds)*time.Second, tvmazeMaxRetryAfter)
+}
+
+func (c *TVMazeClient) wait(ctx context.Context, d time.Duration) error {
+	if c.sleep != nil {
+		return c.sleep(ctx, d)
+	}
+
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

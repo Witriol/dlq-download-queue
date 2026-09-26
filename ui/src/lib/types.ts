@@ -67,7 +67,7 @@ export type SeriesWatch = {
   status?: string;
   attention_count?: number;
   next_episode?: SeriesEpisode | null;
-  /** When the release search for next_episode can first run: air end, or local midnight for date-only drops. */
+  /** The watch's next release search: next_check_at during an active search, else the earliest upcoming searchable time. Empty when neither. */
   next_search_at?: string;
   last_episode?: SeriesEpisode | null;
   next_episode_at?: string;
@@ -132,4 +132,9 @@ export type SeriesPreview = {
   total_candidates?: number;
   error?: string;
   [key: string]: unknown;
+};
+
+/** The global daily TVmaze schedule refresh, shared by all watches. */
+export type SeriesRefresh = {
+  next_refresh_at: string;
 };
