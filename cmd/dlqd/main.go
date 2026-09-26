@@ -78,12 +78,12 @@ func main() {
 		Webshare:     webshareClient,
 		Queue:        service,
 		AllowedRoots: outDirPresets,
-		JobState: func(ctx context.Context, id int64) (string, error) {
+		JobState: func(ctx context.Context, id int64) (series.JobStatus, error) {
 			job, err := service.GetJob(ctx, id)
 			if err != nil {
-				return "", err
+				return series.JobStatus{}, err
 			}
-			return job.Status, nil
+			return series.JobStatus{Status: job.Status, Error: job.Error}, nil
 		},
 	}
 	seriesScheduler := &series.Scheduler{Manager: seriesManager, PollEvery: time.Minute}

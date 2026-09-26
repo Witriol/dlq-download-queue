@@ -124,7 +124,8 @@ If you change the port, set `DLQ_HTTP_PORT` to match.
 - `dlq pause <job_id>`
 - `dlq resume <job_id>`
 - `dlq remove <job_id>` (soft delete)
-- `dlq clear` (hard delete + reset IDs)
+- `dlq clear` (soft delete completed jobs)
+- `dlq purge` (hard delete all jobs and events; IDs are not reused)
 - `dlq settings` (show current settings)
 - `dlq settings --concurrency <1-10> --auto-decrypt <true|false>` (update settings)
 - `dlq help`

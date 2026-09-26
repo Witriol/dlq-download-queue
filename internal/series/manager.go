@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -180,6 +181,7 @@ type WatchView struct {
 	Status                 string          `json:"status"`
 	AttentionCount         int             `json:"attention_count"`
 	NextEpisode            *EpisodeView    `json:"next_episode,omitempty"`
+	NextSearchAt           string          `json:"next_search_at,omitempty"`
 	LastEpisode            *EpisodeView    `json:"last_episode,omitempty"`
 	CreatedAt              string          `json:"created_at"`
 	UpdatedAt              string          `json:"updated_at"`
@@ -190,6 +192,13 @@ type storedProfile struct {
 	Preferences map[string]string `json:"preferences,omitempty"`
 }
 
+// JobStatus is the queue state Manager needs from a job. Exported because
+// cmd/dlqd/main.go builds it from queue.JobView when wiring Manager.JobState.
+type JobStatus struct {
+	Status string
+	Error  string
+}
+
 type Manager struct {
 	Store        *Store
 	TVMaze       TVMazeProvider
@@ -197,7 +206,7 @@ type Manager struct {
 	Queue        QueueCreator
 	AllowedRoots []string
 	Now          func() time.Time
-	JobState     func(context.Context, int64) (string, error)
+	JobState     func(context.Context, int64) (JobStatus, error)
 	runsMu       sync.Mutex
 	running      map[int64]struct{}
 }
@@ -336,7 +345,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*WatchView, er
 	if _, err := m.Store.CreateWatch(ctx, w); err != nil {
 		return nil, err
 	}
-	_, _ = m.Store.AddEvent(ctx, w.ID, 0, "info", "series watch created", "")
+	m.addEvent(ctx, w.ID, 0, "info", "series watch created", "")
 	return m.Get(ctx, w.ID)
 }
 
@@ -369,6 +378,7 @@ func (m *Manager) Update(ctx context.Context, id int64, req UpdateRequest) (*Wat
 	if err != nil {
 		return nil, err
 	}
+	before := *w
 	originalPolicy := w.FallbackPolicy
 	searchSettingsChanged := req.SearchTitle != nil || req.PreferredWaitSeconds != nil || len(req.QualityProfile) > 0
 	policyChanged := req.FallbackPolicy != nil && *req.FallbackPolicy != originalPolicy
@@ -421,6 +431,7 @@ func (m *Manager) Update(ctx context.Context, id int64, req UpdateRequest) (*Wat
 	if err := m.Store.UpdateWatch(ctx, w); err != nil {
 		return nil, err
 	}
+	m.logSettingsChanged(ctx, id, before, *w)
 	// Strict and balanced watches have no candidate-review action once their
 	// bounded search cycle is exhausted. A relevant edit therefore starts a
 	// clean cycle. Manual snapshots remain intact unless the user explicitly
@@ -431,7 +442,7 @@ func (m *Manager) Update(ctx context.Context, id int64, req UpdateRequest) (*Wat
 			return nil, err
 		}
 		if reset > 0 {
-			_, _ = m.Store.AddEvent(ctx, id, 0, "info", "exhausted release searches reset after watch settings changed", mustJSON(map[string]any{"episodes": reset}))
+			m.addEvent(ctx, id, 0, "info", "exhausted release searches reset after watch settings changed", mustJSON(map[string]any{"episodes": reset}))
 		}
 	}
 	// Any editable matching, timing, or destination setting can affect what
@@ -444,13 +455,54 @@ func (m *Manager) Update(ctx context.Context, id int64, req UpdateRequest) (*Wat
 	return m.Get(ctx, id)
 }
 
+// logSettingsChanged logs one audit event listing only the fields Update
+// actually changed. quality_profile is reported as changed without a JSON
+// diff: the encoded document is large and not meant for the audit log.
+func (m *Manager) logSettingsChanged(ctx context.Context, id int64, before, after Watch) {
+	var fields []string
+	details := map[string]any{}
+	addField := func(name string, changed bool, from, to any) {
+		if !changed {
+			return
+		}
+		fields = append(fields, name)
+		details[name] = map[string]any{"from": from, "to": to}
+	}
+	addField("out_dir", before.OutDir != after.OutDir, before.OutDir, after.OutDir)
+	addField("organize_by_season", before.OrganizeBySeason != after.OrganizeBySeason, before.OrganizeBySeason, after.OrganizeBySeason)
+	addField("search_title", before.SearchTitle != after.SearchTitle, before.SearchTitle, after.SearchTitle)
+	addField("fallback_policy", before.FallbackPolicy != after.FallbackPolicy, before.FallbackPolicy, after.FallbackPolicy)
+	addField("preferred_wait_seconds", before.PreferredWaitSeconds != after.PreferredWaitSeconds, before.PreferredWaitSeconds, after.PreferredWaitSeconds)
+	if before.QualityProfileJSON != after.QualityProfileJSON {
+		fields = append(fields, "quality_profile")
+		details["quality_profile"] = "changed"
+	}
+	if len(fields) == 0 {
+		return
+	}
+	m.addEvent(ctx, id, 0, "info", "settings changed: "+strings.Join(fields, ", "), mustJSON(details))
+}
+
 func (m *Manager) SetEnabled(ctx context.Context, id int64, enabled bool) (*WatchView, error) {
+	w, err := m.Store.GetWatch(ctx, id)
+	if err != nil {
+		return nil, err
+	}
 	if err := m.Store.SetWatchEnabled(ctx, id, enabled); err != nil {
 		return nil, err
 	}
 	if enabled {
 		now := m.now()
-		_ = m.Store.UpdateWatchCheck(ctx, id, nil, &now, "")
+		if err := m.Store.ScheduleWatchCheck(ctx, id, now); err != nil {
+			log.Printf("series watch %d: schedule watch check: %v", id, err)
+		}
+	}
+	if enabled != w.Enabled {
+		message := "watch paused"
+		if enabled {
+			message = "watch resumed"
+		}
+		m.addEvent(ctx, id, 0, "info", message, "")
 	}
 	return m.Get(ctx, id)
 }
@@ -665,13 +717,14 @@ func (m *Manager) processWatchWithOptions(ctx context.Context, id int64, recover
 		if !w.Enabled {
 			return ErrWatchPaused
 		}
+		m.addEvent(ctx, id, 0, "info", "manual check requested", "")
 		if w.FallbackPolicy != FallbackManual {
 			reset, err := m.Store.ResetExhaustedEpisodes(ctx, id)
 			if err != nil {
 				return err
 			}
 			if reset > 0 {
-				_, _ = m.Store.AddEvent(ctx, id, 0, "info", "exhausted release searches reset by manual check", mustJSON(map[string]any{"episodes": reset}))
+				m.addEvent(ctx, id, 0, "info", "exhausted release searches reset by manual check", mustJSON(map[string]any{"episodes": reset}))
 			}
 		}
 	}
@@ -679,7 +732,9 @@ func (m *Manager) processWatchWithOptions(ctx context.Context, id int64, recover
 	if err != nil {
 		m.recordWatchFailure(ctx, id, err)
 	}
-	_ = m.Store.PruneEvents(ctx, id, maxEventsPerWatch)
+	if err := m.Store.PruneEvents(ctx, id, maxEventsPerWatch); err != nil {
+		log.Printf("series watch %d: prune events: %v", id, err)
+	}
 	return err
 }
 
@@ -705,11 +760,21 @@ func (m *Manager) finishWatchRun(id int64) {
 	m.runsMu.Unlock()
 }
 
+// addEvent records a watch event and logs any store failure instead of
+// silently dropping it, since a lost audit entry is otherwise invisible.
+func (m *Manager) addEvent(ctx context.Context, watchID, episodeID int64, level, message, details string) {
+	if _, err := m.Store.AddEvent(ctx, watchID, episodeID, level, message, details); err != nil {
+		log.Printf("series watch %d: add event: %v", watchID, err)
+	}
+}
+
 func (m *Manager) recordWatchFailure(ctx context.Context, id int64, checkErr error) {
 	now := m.now()
 	next := now.Add(30 * time.Minute)
-	_ = m.Store.UpdateWatchCheck(ctx, id, &now, &next, checkErr.Error())
-	_, _ = m.Store.AddEvent(ctx, id, 0, "error", "watch check failed", mustJSON(map[string]string{"error": checkErr.Error()}))
+	if err := m.Store.UpdateWatchCheck(ctx, id, &now, &next, checkErr.Error()); err != nil {
+		log.Printf("series watch %d: update watch check: %v", id, err)
+	}
+	m.addEvent(ctx, id, 0, "error", "watch check failed", mustJSON(map[string]string{"error": checkErr.Error()}))
 }
 
 func (m *Manager) processWatchUnlocked(ctx context.Context, id int64) error {
@@ -721,17 +786,52 @@ func (m *Manager) processWatchUnlocked(ctx context.Context, id int64) error {
 		return nil
 	}
 	now := m.now()
+	// Loaded before the upsert loop so a new-vs-tracked episode and an air time
+	// change can be told apart from what TVmaze already reported last check.
+	before, err := m.Store.ListEpisodes(ctx, id)
+	if err != nil {
+		return err
+	}
+	beforeByTVMazeID := make(map[int64]Episode, len(before))
+	for _, ep := range before {
+		beforeByTVMazeID[ep.TVMazeEpisodeID] = ep
+	}
 	eps, err := m.TVMaze.Episodes(ctx, w.TVMazeID)
 	if err != nil {
 		return err
 	}
+	var newCount int
+	var newCodes []string
 	for _, remote := range eps {
 		if remote.Number == nil || remote.Season <= 0 || *remote.Number <= 0 || !shouldTrack(*w, remote) {
 			continue
 		}
+		existed, tracked := beforeByTVMazeID[remote.ID]
 		_, err = m.Store.UpsertEpisode(ctx, EpisodeInput{WatchID: id, TVMazeEpisodeID: remote.ID, Season: remote.Season, Episode: *remote.Number, EpisodeName: remote.Name, AirTimestamp: remote.Airstamp, AirDate: remote.Airdate, AirtimeKnown: remote.Airtime != "", RuntimeMinutes: remote.Runtime, State: StateScheduled})
 		if err != nil {
 			return err
+		}
+		if !tracked {
+			newCount++
+			if len(newCodes) < maxEventCandidates {
+				newCodes = append(newCodes, episodeCode(remote.Season, *remote.Number))
+			}
+			continue
+		}
+		m.logAirTimeChange(ctx, w, existed, remote)
+	}
+	if newCount > 0 {
+		if len(before) == 0 && !w.LastCheckedAt.Valid {
+			// This watch has never completed a check before now: every
+			// tracked episode is "new" by definition, so a per-episode diff
+			// would just restate the list.
+			m.addEvent(ctx, w.ID, 0, "info", fmt.Sprintf("tracking %s from TVmaze", pluralEpisodes(newCount)), "")
+		} else {
+			list := strings.Join(newCodes, ", ")
+			if newCount > len(newCodes) {
+				list += ", …"
+			}
+			m.addEvent(ctx, w.ID, 0, "info", fmt.Sprintf("TVmaze added %s: %s", pluralEpisodes(newCount), list), "")
 		}
 	}
 	stored, err := m.Store.ListEpisodes(ctx, id)
@@ -792,7 +892,9 @@ func (m *Manager) processWatchUnlocked(ctx context.Context, id int64) error {
 			continue
 		}
 		if now.Before(searchFrom) {
-			_ = m.Store.SetEpisodeState(ctx, ep.ID, StateWaitingRelease)
+			if err := m.Store.SetEpisodeState(ctx, ep.ID, StateWaitingRelease); err != nil {
+				log.Printf("series watch %d: set episode state: %v", w.ID, err)
+			}
 			considerNext(searchFrom)
 			if nextAiring == nil || searchFrom.Before(nextAiringEnd) {
 				nextAiring, nextAiringEnd = ep, searchFrom
@@ -844,7 +946,7 @@ func (m *Manager) processWatchUnlocked(ctx context.Context, id int64) error {
 		case idle:
 			message = "no episode due; waiting for next season"
 		}
-		_, _ = m.Store.AddEvent(ctx, w.ID, 0, "info", message, "")
+		m.addEvent(ctx, w.ID, 0, "info", message, "")
 	}
 	return m.Store.UpdateWatchCheck(ctx, id, &now, &next, "")
 }
@@ -903,7 +1005,7 @@ func (m *Manager) searchRelease(ctx context.Context, w *Watch, ep *Episode, prof
 		if err := m.Store.SetEpisodeAttention(ctx, ep.ID, mustJSON(candidateViews(accepted))); err != nil {
 			return time.Time{}, false, err
 		}
-		_, _ = m.Store.AddEvent(ctx, w.ID, ep.ID, "warning", fmt.Sprintf("%s needs review: %d alternatives", code, len(accepted)), details)
+		m.addEvent(ctx, w.ID, ep.ID, "warning", fmt.Sprintf("%s needs review: %d alternatives", code, len(accepted)), details)
 		return time.Time{}, false, nil
 	}
 	if now.Sub(windowStart) >= searchGiveUpAfter {
@@ -918,17 +1020,19 @@ func (m *Manager) searchRelease(ctx context.Context, w *Watch, ep *Episode, prof
 		if len(accepted) > 0 {
 			cause = fmt.Sprintf("no exact release, %d alternatives", len(accepted))
 		}
-		_, _ = m.Store.AddEvent(ctx, w.ID, ep.ID, "warning", fmt.Sprintf("%s gave up after %s: %s", code, shortDuration(searchGiveUpAfter), cause), details)
+		m.addEvent(ctx, w.ID, ep.ID, "warning", fmt.Sprintf("%s gave up after %s: %s", code, shortDuration(searchGiveUpAfter), cause), details)
 		return time.Time{}, false, nil
 	}
 
-	_ = m.Store.SetEpisodeState(ctx, ep.ID, StatePreferredNotFound)
+	if err := m.Store.SetEpisodeState(ctx, ep.ID, StatePreferredNotFound); err != nil {
+		log.Printf("series watch %d: set episode state: %v", w.ID, err)
+	}
 	next := nextSearchAt(w, windowStart, now)
 	if next.Before(now.Add(minimumCheckInterval)) {
 		next = now.Add(minimumCheckInterval)
 	}
 	message := fmt.Sprintf("%s search #%d: %d results, %d accepted, %d exact; next search %s", code, attempts, len(scored), len(accepted), exactCount, formatEventTime(next))
-	_, _ = m.Store.AddEvent(ctx, w.ID, ep.ID, "info", message, details)
+	m.addEvent(ctx, w.ID, ep.ID, "info", message, details)
 	return next, true, nil
 }
 
@@ -964,11 +1068,20 @@ func (m *Manager) refreshShow(ctx context.Context, w *Watch) error {
 		return err
 	}
 	airTimezone := show.airTimezone()
+	oldStatus, oldTimezone := w.ShowStatus, w.AirTimezone
 	if err := m.Store.SetWatchShow(ctx, w.ID, show.Status, airTimezone); err != nil {
 		return err
 	}
 	w.ShowStatus = show.Status
 	w.AirTimezone = sql.NullString{String: airTimezone, Valid: true}
+	// "" means never fetched before; only a change from a known prior value is
+	// worth an event.
+	if oldStatus != "" && oldStatus != show.Status {
+		m.addEvent(ctx, w.ID, 0, "info", fmt.Sprintf("show status %s → %s", oldStatus, show.Status), "")
+	}
+	if oldTimezone.Valid && oldTimezone.String != "" && oldTimezone.String != airTimezone {
+		m.addEvent(ctx, w.ID, 0, "info", fmt.Sprintf("air timezone %s → %s", oldTimezone.String, airTimezone), "")
+	}
 	return nil
 }
 
@@ -1006,6 +1119,39 @@ func episodeRuntime(ep *Episode) time.Duration {
 	return time.Duration(ep.RuntimeMinutes.Int64) * time.Minute
 }
 
+// logAirTimeChange notes a TVmaze schedule correction for an episode already
+// tracked. A final episode (completed/failed/skipped/decrypt_failed) no
+// longer acts on its schedule, so a correction there is not worth an event.
+func (m *Manager) logAirTimeChange(ctx context.Context, w *Watch, existed Episode, remote TVMazeEpisode) {
+	if slices.Contains(finalEpisodeStates, existed.State) {
+		return
+	}
+	var newTimestamp sql.NullString
+	if remote.Airstamp != nil {
+		newTimestamp = sql.NullString{String: remote.Airstamp.UTC().Format(time.RFC3339Nano), Valid: true}
+	}
+	// Matches the store's nullOrValue: a whitespace-only date is not a value.
+	newDate := sql.NullString{String: remote.Airdate, Valid: strings.TrimSpace(remote.Airdate) != ""}
+	if existed.AirTimestamp == newTimestamp && existed.AirDate == newDate {
+		return
+	}
+	code := episodeCode(remote.Season, *remote.Number)
+	message := fmt.Sprintf("%s air time changed: %s → %s", code, airTimeLabel(existed.AirTimestamp, existed.AirDate), airTimeLabel(newTimestamp, newDate))
+	m.addEvent(ctx, w.ID, existed.ID, "info", message, "")
+}
+
+// airTimeLabel renders a known air time for an event message, falling back to
+// the raw air date when no timestamp parses.
+func airTimeLabel(timestamp, airDate sql.NullString) string {
+	if t, ok := parseNullTime(timestamp); ok {
+		return formatEventTime(t)
+	}
+	if airDate.Valid {
+		return airDate.String
+	}
+	return "unknown"
+}
+
 func noEpisodeDueMessage(next *Episode, airEnd time.Time) string {
 	if next == nil {
 		return "no episode due; no upcoming episode known"
@@ -1015,6 +1161,15 @@ func noEpisodeDueMessage(next *Episode, airEnd time.Time) string {
 
 func episodeCode(season, episode int) string {
 	return fmt.Sprintf("S%02dE%02d", season, episode)
+}
+
+// pluralEpisodes renders an episode count for an event message, e.g.
+// "1 episode" or "3 episodes".
+func pluralEpisodes(n int) string {
+	if n == 1 {
+		return "1 episode"
+	}
+	return fmt.Sprintf("%d episodes", n)
 }
 
 func episodeLabel(ep *Episode) string {
@@ -1073,7 +1228,7 @@ func (m *Manager) queueSelection(ctx context.Context, w *Watch, ep *Episode, rea
 		return err
 	}
 	message := fmt.Sprintf("%s queued job #%d (%s): %s", episodeCode(ep.Season, ep.Episode), jobID, reason, ep.ChosenFilename.String)
-	_, _ = m.Store.AddEvent(ctx, w.ID, ep.ID, "info", message, mustJSON(map[string]any{"job_id": jobID, "webshare_ident": ep.ChosenWebshareIdent.String, "filename": ep.ChosenFilename.String, "out_dir": outDir}))
+	m.addEvent(ctx, w.ID, ep.ID, "info", message, mustJSON(map[string]any{"job_id": jobID, "webshare_ident": ep.ChosenWebshareIdent.String, "filename": ep.ChosenFilename.String, "out_dir": outDir}))
 	return nil
 }
 
@@ -1152,6 +1307,7 @@ func (m *Manager) view(ctx context.Context, w *Watch) (*WatchView, error) {
 			if v.NextEpisode == nil || air.Before(mustParseTime(v.NextEpisode.AirTimestamp)) {
 				copy := ev
 				v.NextEpisode = &copy
+				v.NextSearchAt = searchable.UTC().Format(time.RFC3339)
 			}
 		} else {
 			if v.LastEpisode == nil || air.After(mustParseTime(v.LastEpisode.AirTimestamp)) {
@@ -1170,10 +1326,20 @@ func (m *Manager) syncJobState(ctx context.Context, ep *Episode) {
 	if m.JobState == nil {
 		return
 	}
-	state, err := m.JobState(ctx, ep.JobID.Int64)
+	job, err := m.JobState(ctx, ep.JobID.Int64)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			m.skipRemovedJob(ctx, ep)
+			return
+		}
+		log.Printf("series watch %d: job state: %v", ep.WatchID, err)
 		return
 	}
+	if job.Status == queue.StatusDeleted {
+		m.skipRemovedJob(ctx, ep)
+		return
+	}
+	state := job.Status
 	mapped := state
 	switch state {
 	case "resolving":
@@ -1187,14 +1353,38 @@ func (m *Manager) syncJobState(ctx context.Context, ep *Episode) {
 		return
 	}
 	if err := m.Store.SetEpisodeState(ctx, ep.ID, mapped); err != nil {
+		log.Printf("series watch %d: set episode state: %v", ep.WatchID, err)
 		return
 	}
 	ep.State = mapped
 	level := "info"
+	message := fmt.Sprintf("%s job #%d %s", episodeCode(ep.Season, ep.Episode), ep.JobID.Int64, mapped)
 	if mapped == StateFailed || mapped == queue.StatusDecryptFail {
 		level = "error"
+		if job.Error != "" {
+			message += ": " + job.Error
+		}
 	}
-	_, _ = m.Store.AddEvent(ctx, ep.WatchID, ep.ID, level, fmt.Sprintf("%s job #%d %s", episodeCode(ep.Season, ep.Episode), ep.JobID.Int64, mapped), "")
+	m.addEvent(ctx, ep.WatchID, ep.ID, level, message, "")
+}
+
+// skipRemovedJob moves an episode whose job was soft- or hard-deleted from
+// the queue to StateSkipped instead of searching again: the jobs source_key
+// unique index keeps the soft-deleted row, so re-queueing the episode would
+// re-attach the deleted job. A user requeue of that job is still mirrored back
+// by the daily check. Final episodes (skipped included) are left alone, since
+// clearing completed jobs must not rewrite finished downloads.
+func (m *Manager) skipRemovedJob(ctx context.Context, ep *Episode) {
+	if slices.Contains(finalEpisodeStates, ep.State) {
+		return
+	}
+	if err := m.Store.SetEpisodeState(ctx, ep.ID, StateSkipped); err != nil {
+		log.Printf("series watch %d: set episode state: %v", ep.WatchID, err)
+		return
+	}
+	ep.State = StateSkipped
+	message := fmt.Sprintf("%s job #%d removed from queue; episode skipped", episodeCode(ep.Season, ep.Episode), ep.JobID.Int64)
+	m.addEvent(ctx, ep.WatchID, ep.ID, "warning", message, "")
 }
 
 func decodeProfile(raw json.RawMessage, fallback ReleaseProfile) (ReleaseProfile, map[string]string, error) {

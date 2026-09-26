@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -40,6 +41,7 @@ func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 			writeSeriesErr(w, err)
 			return
 		}
+		log.Printf("action=series_create id=%d tvmaze_id=%d name=%q out=%q", item.ID, item.TVMazeID, item.DisplayName, item.OutDir)
 		writeJSON(w, http.StatusCreated, item)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -125,12 +127,14 @@ func (s *Server) handleSeriesItem(w http.ResponseWriter, r *http.Request) {
 				writeSeriesErr(w, err)
 				return
 			}
+			log.Printf("action=series_update id=%d", id)
 			writeJSON(w, http.StatusOK, item)
 		case http.MethodDelete:
 			if err := s.Series.Remove(r.Context(), id); err != nil {
 				writeSeriesErr(w, err)
 				return
 			}
+			log.Printf("action=series_remove id=%d", id)
 			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -183,6 +187,7 @@ func (s *Server) handleSeriesItem(w http.ResponseWriter, r *http.Request) {
 			writeSeriesErr(w, err)
 			return
 		}
+		log.Printf("action=series_select id=%d episode_id=%d ident=%q", id, episodeID, req.Ident)
 		writeJSON(w, http.StatusOK, item)
 		return
 	}
@@ -209,6 +214,7 @@ func (s *Server) handleSeriesItem(w http.ResponseWriter, r *http.Request) {
 		writeSeriesErr(w, err)
 		return
 	}
+	log.Printf("action=series_%s id=%d", parts[1], id)
 	writeJSON(w, http.StatusOK, item)
 }
 

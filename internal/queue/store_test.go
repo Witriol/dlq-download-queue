@@ -378,3 +378,23 @@ func TestListPendingArchiveDecryptAndClear(t *testing.T) {
 		t.Fatalf("expected archive password to be cleared")
 	}
 }
+
+func TestClearAllDoesNotReuseJobIDs(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	firstID, err := store.CreateJob(ctx, &Job{URL: "https://example.com/a", OutDir: "/data", Name: "a", MaxAttempts: 1})
+	if err != nil {
+		t.Fatalf("create first job: %v", err)
+	}
+	if err := store.ClearAll(ctx); err != nil {
+		t.Fatalf("clear all: %v", err)
+	}
+	secondID, err := store.CreateJob(ctx, &Job{URL: "https://example.com/b", OutDir: "/data", Name: "b", MaxAttempts: 1})
+	if err != nil {
+		t.Fatalf("create second job: %v", err)
+	}
+	if secondID <= firstID {
+		t.Fatalf("job id reused after purge: first=%d second=%d", firstID, secondID)
+	}
+}

@@ -638,10 +638,16 @@
     return null;
   }
 
-  /** Next check cell: relative time, or Paused when the watch is disabled. */
+  /**
+   * Next check cell: relative time, or Paused when the watch is disabled. A
+   * check before the release search can start only refreshes the TVmaze
+   * schedule; the server re-checks daily even when the episode is days away.
+   */
   function nextCheckLine(watch) {
-    if (!watch.enabled) return { label: 'Paused', at: null };
-    return { label: relativeTime(watch.next_check_at), at: watch.next_check_at };
+    if (!watch.enabled) return { label: 'Paused', at: null, searchAt: null };
+    const checkAt = watch.next_check_at ? Date.parse(watch.next_check_at) : NaN;
+    const searchAt = watch.next_search_at ? Date.parse(watch.next_search_at) : NaN;
+    return { label: relativeTime(watch.next_check_at), at: watch.next_check_at, searchAt: checkAt < searchAt ? watch.next_search_at : null };
   }
 
   async function refreshLogs() {
@@ -834,6 +840,7 @@
                 </td>
                 <td class="automation-check-cell" data-label="Next check">
                   <strong title={nextCheck.at ? formatDateTimeShort(nextCheck.at) : undefined}>{nextCheck.label}</strong>
+                  {#if nextCheck.searchAt}<small title="The next check only refreshes the TVmaze schedule">search {formatAirTime(nextCheck.searchAt)}</small>{/if}
                   {#if watch.last_checked_at}<small title={formatDateTimeShort(watch.last_checked_at)}>checked {relativeTime(watch.last_checked_at)}</small>{/if}
                 </td>
                 <td class="actions-col" data-label="Actions">

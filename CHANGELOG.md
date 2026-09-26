@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.8 - 2026-09-26
+
+- Added the automated series watcher: TVmaze schedule tracking, Webshare release search with quality profiles and fallback policies, manual candidate review, and a per-watch event log.
+- Episodes whose queue job is removed or purged are marked skipped instead of staying in flight; finished episodes are left untouched.
+- Purge no longer resets job IDs, so a series episode cannot point at an unrelated new job.
+- Resuming a watch keeps its last check time.
+- The watch log records pause/resume, settings changes, manual checks, new TVmaze episodes, air time, show status and timezone changes, and job failure reasons; series API actions are logged to stdout.
+- The series list shows when the next release search starts when the next check only refreshes the TVmaze schedule (`next_search_at`).
+
 ## 0.2.7 - 2026-05-12
 
 - Switched archive extraction to a single `7z` command path using Debian `7zip-rar` from `non-free` for RAR/RAR5 support.

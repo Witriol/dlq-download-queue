@@ -572,12 +572,9 @@ func (s *Store) ClearAll(ctx context.Context) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM jobs`); err != nil {
 		return err
 	}
-	var seqName string
-	if err := tx.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name='sqlite_sequence'`).Scan(&seqName); err == nil {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM sqlite_sequence WHERE name IN ('jobs', 'job_events')`); err != nil {
-			return err
-		}
-	}
+	// sqlite_sequence is deliberately left alone: resetting it would let a new
+	// job reuse an old id, and an unfinished series episode's job_id can still
+	// point at it.
 	return tx.Commit()
 }
 

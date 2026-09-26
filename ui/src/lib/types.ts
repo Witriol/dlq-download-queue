@@ -67,6 +67,8 @@ export type SeriesWatch = {
   status?: string;
   attention_count?: number;
   next_episode?: SeriesEpisode | null;
+  /** When the release search for next_episode can first run: air end, or local midnight for date-only drops. */
+  next_search_at?: string;
   last_episode?: SeriesEpisode | null;
   next_episode_at?: string;
   created_at?: string;

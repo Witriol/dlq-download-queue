@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -347,7 +348,7 @@ func TestManagerBalancedFallbackFiresAtPreferredWait(t *testing.T) {
 		t.Fatalf("event = %q; want %q", got, want)
 	}
 
-	manager.JobState = func(context.Context, int64) (string, error) { return StateDownloading, nil }
+	manager.JobState = func(context.Context, int64) (JobStatus, error) { return JobStatus{Status: StateDownloading}, nil }
 	if err := manager.processWatch(ctx, watchID); err != nil {
 		t.Fatal(err)
 	}
@@ -417,7 +418,10 @@ SELECT ?, 'info', 'old ' || i, '2026-01-01T00:00:00Z' FROM n`, watchID); err != 
 	if err != nil || len(events) != maxEventsPerWatch {
 		t.Fatalf("events after prune = %d, err = %v", len(events), err)
 	}
-	if !strings.HasPrefix(events[0].Message, "S01E02 queued job #1 (exact)") || events[len(events)-1].Message != "old 7" {
+	// The first check also logs "tracking 1 episode from TVmaze", one more
+	// event than before, so one more old event is pruned than would otherwise
+	// be kept.
+	if !strings.HasPrefix(events[0].Message, "S01E02 queued job #1 (exact)") || events[len(events)-1].Message != "old 8" {
 		t.Fatalf("prune kept wrong events: newest=%q oldest=%q", events[0].Message, events[len(events)-1].Message)
 	}
 }
@@ -439,6 +443,9 @@ func TestManagerCheckNowResetsExhaustedAutomaticEpisode(t *testing.T) {
 	}
 	if after[0].State != StatePreferredNotFound || after[0].SearchAttempts != 1 {
 		t.Fatalf("manual recovery did not begin a fresh cycle: %+v", after[0])
+	}
+	if got := countEvents(t, store, watchID, "manual check requested"); got != 1 {
+		t.Fatalf("manual check requested events = %d; want 1", got)
 	}
 }
 
@@ -967,6 +974,21 @@ func countEvents(t *testing.T, store *Store, watchID int64, message string) int 
 	return count
 }
 
+func countEventsWithPrefix(t *testing.T, store *Store, watchID int64, prefix string) int {
+	t.Helper()
+	events, err := store.ListEvents(context.Background(), watchID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, e := range events {
+		if strings.HasPrefix(e.Message, prefix) {
+			count++
+		}
+	}
+	return count
+}
+
 func episodeState(t *testing.T, store *Store, watchID int64) string {
 	t.Helper()
 	episodes, err := store.ListEpisodes(context.Background(), watchID)
@@ -995,7 +1017,7 @@ func TestCheckDueSyncsJobStateWithoutWatchCheck(t *testing.T) {
 	ctx := context.Background()
 	tvmaze := manager.TVMaze.(*fakeTVMaze)
 	checks := tvmaze.calls
-	manager.JobState = func(context.Context, int64) (string, error) { return StateCompleted, nil }
+	manager.JobState = func(context.Context, int64) (JobStatus, error) { return JobStatus{Status: StateCompleted}, nil }
 	for i := 0; i < 2; i++ {
 		if err := manager.CheckDue(ctx); err != nil {
 			t.Fatal(err)
@@ -1012,10 +1034,27 @@ func TestCheckDueSyncsJobStateWithoutWatchCheck(t *testing.T) {
 	}
 }
 
+func TestSyncJobStateAppendsFailureError(t *testing.T) {
+	manager, store, watchID := newQueuedEpisodeFixture(t)
+	ctx := context.Background()
+	manager.JobState = func(context.Context, int64) (JobStatus, error) {
+		return JobStatus{Status: StateFailed, Error: "boom"}, nil
+	}
+	if err := manager.CheckDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if state := episodeState(t, store, watchID); state != StateFailed {
+		t.Fatalf("episode state = %q; want failed", state)
+	}
+	if got := countEvents(t, store, watchID, "S01E02 job #1 failed: boom"); got != 1 {
+		t.Fatalf("failure events = %d; want 1", got)
+	}
+}
+
 func TestCheckDueSkipsJobSyncDuringWatchCheck(t *testing.T) {
 	manager, store, watchID := newQueuedEpisodeFixture(t)
 	ctx := context.Background()
-	manager.JobState = func(context.Context, int64) (string, error) { return StateCompleted, nil }
+	manager.JobState = func(context.Context, int64) (JobStatus, error) { return JobStatus{Status: StateCompleted}, nil }
 	if !manager.startWatchRun(watchID) {
 		t.Fatal("watch already running")
 	}
@@ -1069,14 +1108,14 @@ func TestManagerFetchesShowOnlyWhenIdle(t *testing.T) {
 	tvmaze := manager.TVMaze.(*fakeTVMaze)
 	tvmaze.showStatus = "Running"
 	baseline := tvmaze.showCalls
-	manager.JobState = func(context.Context, int64) (string, error) { return StateDownloading, nil }
+	manager.JobState = func(context.Context, int64) (JobStatus, error) { return JobStatus{Status: StateDownloading}, nil }
 	if err := manager.processWatch(ctx, watchID); err != nil {
 		t.Fatal(err)
 	}
 	if tvmaze.showCalls != baseline {
 		t.Fatalf("show fetched with an unfinished job: calls %d -> %d", baseline, tvmaze.showCalls)
 	}
-	manager.JobState = func(context.Context, int64) (string, error) { return StateCompleted, nil }
+	manager.JobState = func(context.Context, int64) (JobStatus, error) { return JobStatus{Status: StateCompleted}, nil }
 	if err := manager.processWatch(ctx, watchID); err != nil {
 		t.Fatal(err)
 	}
@@ -1100,7 +1139,7 @@ func TestManagerSchedulesEndedShowWeekly(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
 	manager.TVMaze.(*fakeTVMaze).showStatus = tvmazeShowEnded
-	manager.JobState = func(context.Context, int64) (string, error) { return StateCompleted, nil }
+	manager.JobState = func(context.Context, int64) (JobStatus, error) { return JobStatus{Status: StateCompleted}, nil }
 	if err := manager.processWatch(ctx, watchID); err != nil {
 		t.Fatal(err)
 	}
@@ -1119,7 +1158,7 @@ func TestManagerSchedulesEndedShowWeekly(t *testing.T) {
 func TestEpisodeViewUpdatedAtKeepsCompletionTime(t *testing.T) {
 	manager, store, watchID := newQueuedEpisodeFixture(t)
 	ctx := context.Background()
-	manager.JobState = func(context.Context, int64) (string, error) { return StateCompleted, nil }
+	manager.JobState = func(context.Context, int64) (JobStatus, error) { return JobStatus{Status: StateCompleted}, nil }
 	if err := manager.CheckDue(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -1171,6 +1210,13 @@ func TestManagerSearchableAtAirDate(t *testing.T) {
 			if got := watchNextCheck(t, store, watchID); !got.Equal(test.want) {
 				t.Fatalf("next check = %v; want %v", got, test.want)
 			}
+			view, err := manager.Get(ctx, watchID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := test.want.UTC().Format(time.RFC3339); view.NextSearchAt != want {
+				t.Fatalf("next search at = %q; want %q", view.NextSearchAt, want)
+			}
 			if state := episodeState(t, store, watchID); state != StateWaitingRelease {
 				t.Fatalf("state before searchable = %q; want waiting_release", state)
 			}
@@ -1207,6 +1253,88 @@ func TestViewTreatsSearchableDateOnlyEpisodeAsLast(t *testing.T) {
 	}
 }
 
+func TestSyncJobStateSkipsEpisodeWhenJobRemoved(t *testing.T) {
+	tests := []struct {
+		name     string
+		jobState func(context.Context, int64) (JobStatus, error)
+	}{
+		{name: "deleted", jobState: func(context.Context, int64) (JobStatus, error) {
+			return JobStatus{Status: queue.StatusDeleted}, nil
+		}},
+		{name: "purged", jobState: func(context.Context, int64) (JobStatus, error) {
+			return JobStatus{}, sql.ErrNoRows
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			manager, store, watchID := newQueuedEpisodeFixture(t)
+			ctx := context.Background()
+			manager.JobState = test.jobState
+			if err := manager.processWatch(ctx, watchID); err != nil {
+				t.Fatal(err)
+			}
+			if state := episodeState(t, store, watchID); state != StateSkipped {
+				t.Fatalf("episode state = %q; want skipped", state)
+			}
+			want := "S01E02 job #1 removed from queue; episode skipped"
+			if got := countEvents(t, store, watchID, want); got != 1 {
+				t.Fatalf("skip events = %d; want 1", got)
+			}
+			// The episode is no longer in flight once skipped: a later sync must
+			// not re-skip it or duplicate the event.
+			if err := manager.processWatch(ctx, watchID); err != nil {
+				t.Fatal(err)
+			}
+			if got := countEvents(t, store, watchID, want); got != 1 {
+				t.Fatalf("skip events = %d; want 1", got)
+			}
+		})
+	}
+}
+
+func TestSyncJobStateIgnoresRemovedJobOnFinalEpisode(t *testing.T) {
+	tests := []struct {
+		name     string
+		jobState func(context.Context, int64) (JobStatus, error)
+	}{
+		{name: "deleted", jobState: func(context.Context, int64) (JobStatus, error) {
+			return JobStatus{Status: queue.StatusDeleted}, nil
+		}},
+		{name: "purged", jobState: func(context.Context, int64) (JobStatus, error) {
+			return JobStatus{}, sql.ErrNoRows
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			manager, store, watchID := newQueuedEpisodeFixture(t)
+			ctx := context.Background()
+			manager.JobState = func(context.Context, int64) (JobStatus, error) { return JobStatus{Status: StateCompleted}, nil }
+			if err := manager.processWatch(ctx, watchID); err != nil {
+				t.Fatal(err)
+			}
+			if state := episodeState(t, store, watchID); state != StateCompleted {
+				t.Fatalf("episode state = %q; want completed", state)
+			}
+			skipMessage := "S01E02 job #1 removed from queue; episode skipped"
+			before := countEvents(t, store, watchID, skipMessage)
+
+			// A completed episode's job later shows up removed (cleared or
+			// purged). The download already happened; the episode must not be
+			// disturbed.
+			manager.JobState = test.jobState
+			if err := manager.processWatch(ctx, watchID); err != nil {
+				t.Fatal(err)
+			}
+			if state := episodeState(t, store, watchID); state != StateCompleted {
+				t.Fatalf("completed episode state changed to %q after job removal", state)
+			}
+			if got := countEvents(t, store, watchID, skipMessage); got != before {
+				t.Fatalf("skip events = %d; want unchanged from %d", got, before)
+			}
+		})
+	}
+}
+
 func TestManagerFetchesTimezoneOnce(t *testing.T) {
 	ctx := context.Background()
 	manager, store, _, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-MeGusta.mkv", 0)
@@ -1229,5 +1357,227 @@ func TestManagerFetchesTimezoneOnce(t *testing.T) {
 	}
 	if !watch.AirTimezone.Valid || watch.AirTimezone.String != "" {
 		t.Fatalf("air timezone = %+v; want fetched and empty", watch.AirTimezone)
+	}
+}
+
+func TestManagerLogsAddedEpisodesAfterResume(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	manager, store, _, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-MeGusta.mkv", 0)
+	number := 2
+	air := now.Add(12 * time.Hour)
+	tvmaze := &fakeTVMaze{episodes: []TVMazeEpisode{{ID: 1002, Name: "Second", Season: 1, Number: &number, Airstamp: &air}}}
+	manager.TVMaze = tvmaze
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	for _, enabled := range []bool{false, true} {
+		if _, err := manager.SetEnabled(ctx, watchID, enabled); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w, err := store.GetWatch(ctx, watchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !w.LastCheckedAt.Valid {
+		t.Fatal("resume cleared last_checked_at")
+	}
+
+	three := 3
+	airThree := now.Add(36 * time.Hour)
+	tvmaze.episodes = append(tvmaze.episodes, TVMazeEpisode{ID: 1003, Name: "Third", Season: 1, Number: &three, Airstamp: &airThree})
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEvents(t, store, watchID, "TVmaze added 1 episode: S01E03"); got != 1 {
+		t.Fatalf("added events after resume = %d; want 1", got)
+	}
+}
+
+func TestManagerLogsFirstSeasonAnnouncedAfterOffSeason(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	manager, store, _, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-MeGusta.mkv", 0)
+	tvmaze := &fakeTVMaze{}
+	manager.TVMaze = tvmaze
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+
+	number := 2
+	air := now.Add(12 * time.Hour)
+	tvmaze.episodes = []TVMazeEpisode{{ID: 1002, Name: "Second", Season: 1, Number: &number, Airstamp: &air}}
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEvents(t, store, watchID, "TVmaze added 1 episode: S01E02"); got != 1 {
+		t.Fatalf("added events after off-season = %d; want 1", got)
+	}
+}
+
+func TestManagerLogsTVMazeEpisodeChanges(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	manager, store, queue, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-MeGusta.mkv", 0)
+	number := 2
+	air := now.Add(12 * time.Hour)
+	tvmaze := &fakeTVMaze{episodes: []TVMazeEpisode{{ID: 1002, Name: "Second", Season: 1, Number: &number, Airstamp: &air}}}
+	manager.TVMaze = tvmaze
+
+	// First check: nothing was stored before, so this is a plain count, not a
+	// per-episode "added" list.
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEvents(t, store, watchID, "tracking 1 episode from TVmaze"); got != 1 {
+		t.Fatalf("first-check summary events = %d; want 1", got)
+	}
+
+	// New episodes show up on a later check as a per-episode list.
+	three, four := 3, 4
+	airThree, airFour := now.Add(36*time.Hour), now.Add(60*time.Hour)
+	tvmaze.episodes = append(tvmaze.episodes,
+		TVMazeEpisode{ID: 1003, Name: "Third", Season: 1, Number: &three, Airstamp: &airThree},
+		TVMazeEpisode{ID: 1004, Name: "Fourth", Season: 1, Number: &four, Airstamp: &airFour})
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEvents(t, store, watchID, "TVmaze added 2 episodes: S01E03, S01E04"); got != 1 {
+		t.Fatalf("new episode events = %d; want 1", got)
+	}
+
+	// A schedule correction on the still-scheduled first episode is logged.
+	newAir := air.Add(2 * time.Hour)
+	tvmaze.episodes[0].Airstamp = &newAir
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("S01E02 air time changed: %s → %s", formatEventTime(air), formatEventTime(newAir))
+	if got := countEvents(t, store, watchID, want); got != 1 {
+		t.Fatalf("air time change events = %d; want 1 (message %q)", got, want)
+	}
+
+	// An unchanged episode logs nothing more on a later check.
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEventsWithPrefix(t, store, watchID, "S01E02 air time changed"); got != 1 {
+		t.Fatalf("air time change events after an unchanged check = %d; want 1", got)
+	}
+
+	// A final episode no longer acts on its schedule, so a further TVmaze
+	// correction is not worth an event.
+	ep, err := store.GetEpisodeByTVMazeID(ctx, watchID, 1002)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobID, err := queue.CreateJob(ctx, "https://webshare.cz/#/file/candidate", "/data/tv", "", "webshare", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AttachJob(ctx, ep.ID, jobID, StateCompleted); err != nil {
+		t.Fatal(err)
+	}
+	finalAir := newAir.Add(2 * time.Hour)
+	tvmaze.episodes[0].Airstamp = &finalAir
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEventsWithPrefix(t, store, watchID, "S01E02 air time changed"); got != 1 {
+		t.Fatalf("final episode logged an air time change: %d events", got)
+	}
+}
+
+func TestManagerLogsShowStatusAndTimezoneChanges(t *testing.T) {
+	ctx := context.Background()
+	manager, store, watchID := newQueuedEpisodeFixture(t)
+	tvmaze := manager.TVMaze.(*fakeTVMaze)
+	manager.JobState = func(context.Context, int64) (JobStatus, error) { return JobStatus{Status: StateCompleted}, nil }
+
+	// First fetch of a non-empty status/timezone establishes the baseline;
+	// nothing was known before, so no change event fires yet.
+	tvmaze.showStatus = "Running"
+	tvmaze.showTimezone = "America/New_York"
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEvents(t, store, watchID, "show status  → Running"); got != 0 {
+		t.Fatalf("baseline show status logged a change: %d events", got)
+	}
+	if got := countEvents(t, store, watchID, "air timezone  → America/New_York"); got != 0 {
+		t.Fatalf("baseline air timezone logged a change: %d events", got)
+	}
+
+	// A later, actual change from a known prior value is logged.
+	tvmaze.showStatus = "Ended"
+	tvmaze.showTimezone = "Europe/Prague"
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEvents(t, store, watchID, "show status Running → Ended"); got != 1 {
+		t.Fatalf("show status change events = %d; want 1", got)
+	}
+	if got := countEvents(t, store, watchID, "air timezone America/New_York → Europe/Prague"); got != 1 {
+		t.Fatalf("air timezone change events = %d; want 1", got)
+	}
+}
+
+func TestManagerSetEnabledLogsOnlyOnActualChange(t *testing.T) {
+	ctx := context.Background()
+	manager, store, _, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-MeGusta.mkv", 0)
+
+	// Already enabled: re-enabling is a no-op and must not log anything.
+	if _, err := manager.SetEnabled(ctx, watchID, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEvents(t, store, watchID, "watch resumed"); got != 0 {
+		t.Fatalf("no-op enable logged an event: %d", got)
+	}
+
+	if _, err := manager.SetEnabled(ctx, watchID, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEvents(t, store, watchID, "watch paused"); got != 1 {
+		t.Fatalf("pause events = %d; want 1", got)
+	}
+
+	// Already paused: pausing again must not duplicate the event.
+	if _, err := manager.SetEnabled(ctx, watchID, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEvents(t, store, watchID, "watch paused"); got != 1 {
+		t.Fatalf("pause events after no-op = %d; want 1", got)
+	}
+
+	if _, err := manager.SetEnabled(ctx, watchID, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEvents(t, store, watchID, "watch resumed"); got != 1 {
+		t.Fatalf("resume events = %d; want 1", got)
+	}
+}
+
+func TestManagerUpdateLogsChangedFieldsOnly(t *testing.T) {
+	ctx := context.Background()
+	manager, store, _, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-MeGusta.mkv", 0)
+
+	// No editable field actually changes: no event.
+	sameTitle := "Some Show"
+	if _, err := manager.Update(ctx, watchID, UpdateRequest{SearchTitle: &sameTitle}); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEventsWithPrefix(t, store, watchID, "settings changed"); got != 0 {
+		t.Fatalf("no-op update logged an event: got %d matching \"settings changed\"", got)
+	}
+
+	newTitle := "Some Show (2026)"
+	newOutDir := "/data/tv/some-show"
+	if _, err := manager.Update(ctx, watchID, UpdateRequest{SearchTitle: &newTitle, OutDir: &newOutDir}); err != nil {
+		t.Fatal(err)
+	}
+	want := "settings changed: out_dir, search_title"
+	if got := countEvents(t, store, watchID, want); got != 1 {
+		t.Fatalf("update events = %d; want 1 (message %q)", got, want)
 	}
 }
