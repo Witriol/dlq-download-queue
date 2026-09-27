@@ -1734,3 +1734,102 @@ func TestManagerUpdateLogsChangedFieldsOnly(t *testing.T) {
 		t.Fatalf("update events = %d; want 1 (message %q)", got, want)
 	}
 }
+
+// TestBuildEpisodeSourceKeyRoundTripsWithParse guards against the builder
+// (queueSelection) and the parser drifting apart into two independent
+// "series:%d:episode:%d" literals.
+func TestBuildEpisodeSourceKeyRoundTripsWithParse(t *testing.T) {
+	key := buildEpisodeSourceKey(7, 1002)
+	if key != "series:7:episode:1002" {
+		t.Fatalf("buildEpisodeSourceKey(7, 1002) = %q, want %q", key, "series:7:episode:1002")
+	}
+
+	watchID, episodeID, ok := parseEpisodeSourceKey(key)
+	if !ok || watchID != 7 || episodeID != 1002 {
+		t.Fatalf("parseEpisodeSourceKey(%q) = (%d, %d, %v), want (7, 1002, true)", key, watchID, episodeID, ok)
+	}
+}
+
+func TestParseEpisodeSourceKey(t *testing.T) {
+	tests := []struct {
+		name        string
+		key         string
+		wantWatch   int64
+		wantEpisode int64
+		wantOK      bool
+	}{
+		{name: "valid", key: "series:7:episode:1002", wantWatch: 7, wantEpisode: 1002, wantOK: true},
+		{name: "empty", key: "", wantOK: false},
+		{name: "wrong prefix", key: "webshare:7:episode:1002", wantOK: false},
+		{name: "missing infix", key: "series:7:1002", wantOK: false},
+		{name: "non-numeric watch", key: "series:abc:episode:1002", wantOK: false},
+		{name: "non-numeric episode", key: "series:7:episode:abc", wantOK: false},
+		{name: "trailing garbage after infix only", key: "series::episode:", wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			watchID, episodeID, ok := parseEpisodeSourceKey(tt.key)
+			if ok != tt.wantOK {
+				t.Fatalf("parseEpisodeSourceKey(%q) ok = %v, want %v", tt.key, ok, tt.wantOK)
+			}
+			if !tt.wantOK {
+				return
+			}
+			if watchID != tt.wantWatch || episodeID != tt.wantEpisode {
+				t.Fatalf("parseEpisodeSourceKey(%q) = (%d, %d), want (%d, %d)", tt.key, watchID, episodeID, tt.wantWatch, tt.wantEpisode)
+			}
+		})
+	}
+}
+
+func TestEpisodeForSourceKeyNonSeriesKeyReturnsNil(t *testing.T) {
+	store, _ := newSeriesStore(t)
+	manager := &Manager{Store: store}
+
+	watch, ep, err := manager.EpisodeForSourceKey(context.Background(), "not-a-series-key")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if watch != nil || ep != nil {
+		t.Fatalf("expected nil, nil for a non-series key; got watch=%+v ep=%+v", watch, ep)
+	}
+}
+
+func TestEpisodeForSourceKeyResolvesWatchAndEpisode(t *testing.T) {
+	store, _ := newSeriesStore(t)
+	ctx := context.Background()
+	manager := &Manager{Store: store}
+
+	watchID, err := store.CreateWatch(ctx, &Watch{DisplayName: "Some Show", OutDir: "/data/tv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertEpisode(ctx, EpisodeInput{WatchID: watchID, TVMazeEpisodeID: 1002, Season: 1, Episode: 2, EpisodeName: "Second", State: StateSearching}); err != nil {
+		t.Fatal(err)
+	}
+
+	sourceKey := fmt.Sprintf("series:%d:episode:%d", watchID, 1002)
+	watch, ep, err := manager.EpisodeForSourceKey(ctx, sourceKey)
+	if err != nil {
+		t.Fatalf("EpisodeForSourceKey: %v", err)
+	}
+	if watch == nil || ep == nil {
+		t.Fatalf("expected watch and episode, got watch=%+v ep=%+v", watch, ep)
+	}
+	if watch.DisplayName != "Some Show" {
+		t.Fatalf("watch.DisplayName = %q, want %q", watch.DisplayName, "Some Show")
+	}
+	if ep.Season != 1 || ep.Episode != 2 || ep.EpisodeName != "Second" {
+		t.Fatalf("unexpected episode: %+v", ep)
+	}
+}
+
+func TestEpisodeForSourceKeyUnknownWatchReturnsError(t *testing.T) {
+	store, _ := newSeriesStore(t)
+	manager := &Manager{Store: store}
+
+	_, _, err := manager.EpisodeForSourceKey(context.Background(), "series:999:episode:1")
+	if err == nil {
+		t.Fatalf("expected an error for an unknown watch id")
+	}
+}

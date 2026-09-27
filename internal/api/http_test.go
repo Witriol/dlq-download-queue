@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Witriol/dlq-download-queue/internal/notify"
 	"github.com/Witriol/dlq-download-queue/internal/queue"
 )
 
@@ -201,5 +202,80 @@ func TestHandleGroupRejectsExtraPathSegments(t *testing.T) {
 	}
 	if q.removeGroupCalledWith != "" {
 		t.Fatalf("expected remove not to be called, got group id %q", q.removeGroupCalledWith)
+	}
+}
+
+func TestHandleSettingsTelegramTestRejectsNonPost(t *testing.T) {
+	srv := &Server{}
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/telegram/test", nil)
+	rec := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", rec.Code)
+	}
+}
+
+// TestHandleSettingsTelegramTestMissingTokenAndChat exercises the 400 path:
+// no bot token is stored and none was sent, so SendTest is never reached
+// (its Bot API base URL is private to package notify and cannot be pointed
+// at an httptest server from here, so the 200 success path is not covered
+// by this package's tests).
+func TestHandleSettingsTelegramTestMissingTokenAndChat(t *testing.T) {
+	settings := &Settings{Telegram: defaultTelegramSettings()}
+	notifier := notify.NewNotifier(settings.GetTelegram, nil)
+	srv := &Server{Settings: settings, Notifier: notifier}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/telegram/test", strings.NewReader(`{"chat_id":""}`))
+	rec := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleSettingsTelegramTestUsesStoredChatIDFallback(t *testing.T) {
+	settings := &Settings{Telegram: telegramSettings{ChatID: "stored-chat"}}
+	notifier := notify.NewNotifier(settings.GetTelegram, nil)
+	srv := &Server{Settings: settings, Notifier: notifier}
+
+	// bot_token still missing (neither stored nor sent): still 400.
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/telegram/test", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleSettingsTelegramTestRejectsTokenWithControlChar(t *testing.T) {
+	settings := &Settings{Telegram: defaultTelegramSettings()}
+	notifier := notify.NewNotifier(settings.GetTelegram, nil)
+	srv := &Server{Settings: settings, Notifier: notifier}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/telegram/test", strings.NewReader(`{"bot_token":"tok\nX-Evil","chat_id":"c"}`))
+	rec := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleSettingsTelegramTestNotInitialized(t *testing.T) {
+	srv := &Server{}
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/telegram/test", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
 	}
 }

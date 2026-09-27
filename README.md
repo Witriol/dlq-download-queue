@@ -14,6 +14,7 @@ Minimal headless download-queue daemon + CLI inspired by JDownloader, designed f
 - [CLI](#cli)
 - [UI (SvelteKit)](#ui-sveltekit)
 - [How it works](#how-it-works)
+- [Telegram notifications](#telegram-notifications)
 - [Environment variables](#environment-variables)
 - [Security](#security)
 - [Docker Compose](#docker-compose)
@@ -27,6 +28,7 @@ Minimal headless download-queue daemon + CLI inspired by JDownloader, designed f
 - Persistent SQLite-backed job queue with retries, pause/resume, and soft delete
 - Aria2-powered downloads with progress, speed, and ETA reporting
 - Optional automatic archive decrypt/extract after download completion
+- Optional Telegram notifications for finished and failed jobs
 - Pluggable URL resolvers (Webshare anonymous mode, HTTP/HTTPS passthrough)
 - CLI for scripting and automation (`dlq add`, `dlq status --watch`, ...)
 - Optional SvelteKit web UI with batch add, folder browser, and live dashboard
@@ -154,6 +156,32 @@ Presets for out_dir are served from `GET /meta` and derived from `DATA_*` volume
 - `--site` forces a resolver; unknown values return `unknown_site`.
 - Queue is persistent across restarts (`/state/dlq.db`).
 
+## Telegram notifications
+
+Configured in the UI settings dialog and stored in `settings.json` (written with mode `0600`). The bot token is never returned by the API; leave the field empty to keep the stored one. Disabling notifications keeps the token and chat ID.
+
+- Events, each toggleable: `completed` (after extraction), `failed` (retries exhausted), `retrying` (an attempt failed, another follows), `extract failed`.
+- Events within 30 seconds of the first one are sent as one message, one line per job. A multipart archive is reported once, after all parts complete; part failures in the same window collapse into one line.
+- **Send test** sends the completed template with sample values using the form's current token and chat ID.
+- Delivery is fire-and-forget; send errors go to the daemon log with the token masked.
+- `{time}` uses the container time zone (`TZ`).
+
+Templates are plain text. Unknown placeholders are left as-is.
+
+| Placeholder | Value |
+|---|---|
+| `{name}` | job name, file name, or archive name for multipart sets |
+| `{filename}` | resolved file name |
+| `{size}`, `{size_bytes}` | human-readable / raw size (summed for multipart) |
+| `{time}`, `{duration}`, `{speed}` | finish time, start-to-finish duration, average speed |
+| `{site}`, `{url}`, `{dir}` | resolver site, source URL, output directory |
+| `{id}`, `{parts}` | job ID(s), number of archive parts |
+| `{status}`, `{event}` | job status, event label |
+| `{error}`, `{error_code}`, `{attempts}`, `{max_attempts}` | failure details |
+| `{series}`, `{episode}`, `{episode_title}` | series name, `S01E02`, episode name (series jobs only) |
+
+Defaults: completed `✅ {name} ({size}) finished in {duration}`, failure `❌ {name}: {event} - {error}`.
+
 ## Environment variables
 
 ### DLQ
@@ -186,7 +214,7 @@ Presets for out_dir are served from `GET /meta` and derived from `DATA_*` volume
 | `ARIA2_CONSOLE_LOG_LEVEL` | `warn` | Aria2 console log level |
 | `ARIA2_SHOW_CONSOLE_READOUT` | `false` | Show aria2 console readout |
 
-> **Note:** `concurrency`, `max_attempts`, and `auto_decrypt` are stored in `settings.json` under `DLQ_STATE_DIR` and can be updated via `dlq settings` or the UI. The file is created with defaults on first start.
+> **Note:** `concurrency`, `max_attempts`, `auto_decrypt`, and `telegram` are stored in `settings.json` under `DLQ_STATE_DIR` and can be updated via `dlq settings` or the UI (`telegram` via the UI only). The file is created with defaults on first start.
 >
 > UI out_dir presets are derived from `DATA_*` env values (container paths); make sure they are passed into the container. All job `out_dir` values must live under one of the `DATA_*` container paths.
 

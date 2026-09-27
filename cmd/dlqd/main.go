@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/Witriol/dlq-download-queue/internal/api"
 	"github.com/Witriol/dlq-download-queue/internal/db"
 	"github.com/Witriol/dlq-download-queue/internal/downloader"
+	"github.com/Witriol/dlq-download-queue/internal/notify"
 	"github.com/Witriol/dlq-download-queue/internal/queue"
 	"github.com/Witriol/dlq-download-queue/internal/resolver"
 	"github.com/Witriol/dlq-download-queue/internal/series"
@@ -69,7 +71,6 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runner.Start(ctx)
 
 	seriesStore := series.NewStore(dbConn)
 	seriesManager := &series.Manager{
@@ -89,11 +90,33 @@ func main() {
 	seriesScheduler := &series.Scheduler{Manager: seriesManager, PollEvery: time.Minute}
 	go seriesScheduler.Start(ctx)
 
+	// seriesLookup fills the {series}/{episode}/{episode_title} placeholders
+	// for a job's SourceKey; not-found or non-series jobs render them empty.
+	seriesLookup := func(ctx context.Context, sourceKey string) (notify.SeriesInfo, bool) {
+		watch, ep, err := seriesManager.EpisodeForSourceKey(ctx, sourceKey)
+		if err != nil || watch == nil || ep == nil {
+			return notify.SeriesInfo{}, false
+		}
+		return notify.SeriesInfo{
+			Series:       watch.DisplayName,
+			Episode:      fmt.Sprintf("S%02dE%02d", ep.Season, ep.Episode),
+			EpisodeTitle: ep.EpisodeName,
+		}, true
+	}
+	notifier := notify.NewNotifier(settings.GetTelegram, seriesLookup)
+	go notifier.Run(ctx)
+
+	// Set before starting the runner so no completed/failed job can race
+	// past a nil Notify.
+	runner.Notify = notifier.Enqueue
+	go runner.Start(ctx)
+
 	server := &api.Server{
 		Queue:    service,
 		Meta:     &api.Meta{OutDirPresets: outDirPresets, Version: versionString()},
 		Settings: settings,
 		Series:   seriesManager,
+		Notifier: notifier,
 	}
 	ln, err := net.Listen("tcp", listen)
 	if err != nil {

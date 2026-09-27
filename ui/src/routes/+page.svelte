@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { addJobsBatch, clearJobs, getEvents, getMeta, getSettings, listJobs, listSeries, postAction, postGroupAction, updateSettings } from '$lib/api';
+  import { addJobsBatch, clearJobs, getEvents, getMeta, getSettings, listJobs, listSeries, postAction, postGroupAction, testTelegramSettings, updateSettings } from '$lib/api';
   import { displayStatus } from '$lib/status';
   import { humanBytes, humanDuration, localTimeZone } from '$lib/format';
   import { countsFor, detectSite, parseUrls, sortJobs } from '$lib/job-utils';
@@ -60,6 +60,20 @@
   let settingsAutoDecrypt = true;
   let settingsError = '';
   let settingsSaving = false;
+
+  let settingsTelegramEnabled = false;
+  let settingsTelegramBotToken = '';
+  let settingsTelegramBotTokenSet = false;
+  let settingsTelegramChatId = '';
+  let settingsTelegramEvents = { completed: true, failed: true, retrying: false, extract_failed: true };
+  // Same text as the fallbacks in internal/notify/render.go.
+  const DEFAULT_COMPLETED_TEMPLATE = '✅ {name} ({size}) finished in {duration}';
+  const DEFAULT_FAILURE_TEMPLATE = '❌ {name}: {event} - {error}';
+
+  let settingsTelegramCompletedTemplate = DEFAULT_COMPLETED_TEMPLATE;
+  let settingsTelegramFailureTemplate = DEFAULT_FAILURE_TEMPLATE;
+  let settingsTelegramTesting = false;
+  let settingsTelegramTestResult = '';
 
   let showBrowser = false;
   let bodyLockState = null;
@@ -301,13 +315,29 @@
     stopLogsTimer();
   }
 
+  function applyTelegramSettings(telegram) {
+    if (!telegram) {
+      return;
+    }
+
+    settingsTelegramEnabled = telegram.enabled;
+    settingsTelegramBotTokenSet = telegram.bot_token_set;
+    settingsTelegramChatId = telegram.chat_id;
+    settingsTelegramEvents = { ...telegram.events };
+    settingsTelegramCompletedTemplate = telegram.completed_template || DEFAULT_COMPLETED_TEMPLATE;
+    settingsTelegramFailureTemplate = telegram.failure_template || DEFAULT_FAILURE_TEMPLATE;
+    settingsTelegramBotToken = '';
+  }
+
   async function loadSettings() {
     settingsError = '';
+    settingsTelegramTestResult = '';
     try {
       const settings = await getSettings();
       settingsConcurrency = settings.concurrency;
       settingsMaxAttempts = settings.max_attempts;
       settingsAutoDecrypt = settings.auto_decrypt;
+      applyTelegramSettings(settings.telegram);
     } catch (err) {
       settingsError = err instanceof Error ? err.message : String(err);
     }
@@ -320,16 +350,43 @@
       const updated = await updateSettings({
         concurrency: settingsConcurrency,
         max_attempts: settingsMaxAttempts,
-        auto_decrypt: settingsAutoDecrypt
+        auto_decrypt: settingsAutoDecrypt,
+        telegram: {
+          enabled: settingsTelegramEnabled,
+          chat_id: settingsTelegramChatId,
+          events: settingsTelegramEvents,
+          completed_template: settingsTelegramCompletedTemplate,
+          failure_template: settingsTelegramFailureTemplate,
+          ...(settingsTelegramBotToken ? { bot_token: settingsTelegramBotToken } : {})
+        }
       });
       settingsConcurrency = updated.concurrency;
       settingsMaxAttempts = updated.max_attempts;
       settingsAutoDecrypt = updated.auto_decrypt;
+      applyTelegramSettings(updated.telegram);
       showSettings = false;
     } catch (err) {
       settingsError = err instanceof Error ? err.message : String(err);
     } finally {
       settingsSaving = false;
+    }
+  }
+
+  async function testTelegram() {
+    settingsTelegramTestResult = '';
+    settingsTelegramTesting = true;
+    try {
+      const payload = {
+        chat_id: settingsTelegramChatId,
+        completed_template: settingsTelegramCompletedTemplate,
+        ...(settingsTelegramBotToken ? { bot_token: settingsTelegramBotToken } : {})
+      };
+      await testTelegramSettings(payload);
+      settingsTelegramTestResult = 'ok';
+    } catch (err) {
+      settingsTelegramTestResult = err instanceof Error ? err.message : String(err);
+    } finally {
+      settingsTelegramTesting = false;
     }
   }
 
@@ -596,10 +653,20 @@
   bind:settingsConcurrency
   bind:settingsMaxAttempts
   bind:settingsAutoDecrypt
+  bind:settingsTelegramEnabled
+  bind:settingsTelegramBotToken
+  bind:settingsTelegramChatId
+  bind:settingsTelegramEvents
+  bind:settingsTelegramCompletedTemplate
+  bind:settingsTelegramFailureTemplate
+  {settingsTelegramBotTokenSet}
+  {settingsTelegramTesting}
+  {settingsTelegramTestResult}
   {settingsError}
   {settingsSaving}
   onClose={() => (showSettings = false)}
   onSave={saveSettings}
+  onTestTelegram={testTelegram}
 />
 
 <FolderBrowser

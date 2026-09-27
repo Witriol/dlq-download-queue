@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Witriol/dlq-download-queue/internal/notify"
 	"github.com/Witriol/dlq-download-queue/internal/queue"
 	"github.com/Witriol/dlq-download-queue/internal/series"
 )
@@ -42,6 +43,7 @@ type Server struct {
 	Meta     *Meta
 	Settings *Settings
 	Series   *series.Manager
+	Notifier *notify.Notifier
 }
 
 func (s *Server) Handler() http.Handler {
@@ -53,6 +55,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/jobs/groups/", s.handleGroup)
 	mux.HandleFunc("/jobs/", s.handleJob)
 	mux.HandleFunc("/api/settings", s.handleSettings)
+	mux.HandleFunc("/api/settings/telegram/test", s.handleSettingsTelegramTest)
 	mux.HandleFunc("/api/browse/mkdir", s.handleBrowseMkdir)
 	mux.HandleFunc("/api/browse", s.handleBrowse)
 	mux.HandleFunc("/series", s.handleSeries)
@@ -343,6 +346,62 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+type telegramTestRequest struct {
+	BotToken          string `json:"bot_token"`
+	ChatID            string `json:"chat_id"`
+	CompletedTemplate string `json:"completed_template"`
+}
+
+// handleSettingsTelegramTest sends a one-off Telegram message using the
+// given (or stored, if empty) token/chat id. It never logs the token or the
+// request body.
+func (s *Server) handleSettingsTelegramTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if s.Notifier == nil || s.Settings == nil {
+		writeErr(w, http.StatusInternalServerError, errors.New("notifier not initialized"))
+		return
+	}
+
+	var req telegramTestRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeErr(w, http.StatusRequestEntityTooLarge, errors.New("request body too large"))
+			return
+		}
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+
+	// Resolve the fallback ourselves so a missing token/chat id is a 400,
+	// distinct from a 502 once SendTest actually talks to Telegram.
+	cfg := s.Settings.GetTelegram()
+	token, chatID := strings.TrimSpace(req.BotToken), req.ChatID
+	if token == "" {
+		token = cfg.BotToken
+	}
+	if chatID == "" {
+		chatID = cfg.ChatID
+	}
+	if token == "" || chatID == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("missing bot token or chat id"))
+		return
+	}
+	if containsWhitespaceOrControl(token) {
+		writeErr(w, http.StatusBadRequest, errors.New("bot token must not contain whitespace or control characters"))
+		return
+	}
+
+	if err := s.Notifier.SendTest(r.Context(), token, chatID, req.CompletedTemplate); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 type browseResponse struct {

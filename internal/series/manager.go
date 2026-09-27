@@ -1261,7 +1261,7 @@ func (m *Manager) queueSelection(ctx context.Context, w *Watch, ep *Episode, rea
 		return err
 	}
 	url := "https://webshare.cz/#/file/" + ep.ChosenWebshareIdent.String
-	sourceKey := fmt.Sprintf("series:%d:episode:%d", w.ID, ep.TVMazeEpisodeID)
+	sourceKey := buildEpisodeSourceKey(w.ID, ep.TVMazeEpisodeID)
 	var jobID int64
 	if keyed, ok := m.Queue.(SourceKeyQueueCreator); ok {
 		jobID, err = keyed.CreateJobWithSourceKey(ctx, url, outDir, "", "webshare", "", 0, sourceKey)
@@ -1277,6 +1277,63 @@ func (m *Manager) queueSelection(ctx context.Context, w *Watch, ep *Episode, rea
 	message := fmt.Sprintf("%s queued job #%d (%s): %s", episodeCode(ep.Season, ep.Episode), jobID, reason, ep.ChosenFilename.String)
 	m.addEvent(ctx, w.ID, ep.ID, "info", message, mustJSON(map[string]any{"job_id": jobID, "webshare_ident": ep.ChosenWebshareIdent.String, "filename": ep.ChosenFilename.String, "out_dir": outDir}))
 	return nil
+}
+
+// sourceKeyPrefix and sourceKeyInfix bracket the watch id in a job's
+// SourceKey; buildEpisodeSourceKey and parseEpisodeSourceKey are the only
+// two places that know this format.
+const (
+	sourceKeyPrefix = "series:"
+	sourceKeyInfix  = ":episode:"
+)
+
+// buildEpisodeSourceKey formats the SourceKey used above in queueSelection
+// for a job created from an episode selection.
+func buildEpisodeSourceKey(watchID, tvmazeEpisodeID int64) string {
+	return fmt.Sprintf("%s%d%s%d", sourceKeyPrefix, watchID, sourceKeyInfix, tvmazeEpisodeID)
+}
+
+// parseEpisodeSourceKey extracts the watch and TVmaze episode ids from a
+// job's SourceKey. ok is false when key does not match
+// "series:<watchID>:episode:<tvmazeEpisodeID>".
+func parseEpisodeSourceKey(key string) (watchID, tvmazeEpisodeID int64, ok bool) {
+	if !strings.HasPrefix(key, sourceKeyPrefix) {
+		return 0, 0, false
+	}
+	parts := strings.SplitN(strings.TrimPrefix(key, sourceKeyPrefix), sourceKeyInfix, 2)
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	watchID, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	tvmazeEpisodeID, err = strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	return watchID, tvmazeEpisodeID, true
+}
+
+// EpisodeForSourceKey resolves a job's SourceKey to its watch and episode.
+// It returns nil, nil, nil when key is not a series episode source key.
+func (m *Manager) EpisodeForSourceKey(ctx context.Context, key string) (*Watch, *Episode, error) {
+	watchID, tvmazeEpisodeID, ok := parseEpisodeSourceKey(key)
+	if !ok {
+		return nil, nil, nil
+	}
+
+	w, err := m.Store.GetWatch(ctx, watchID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	ep, err := m.Store.GetEpisodeByTVMazeID(ctx, watchID, tvmazeEpisodeID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return w, ep, nil
 }
 
 func (m *Manager) searchEpisode(ctx context.Context, title string, season, episode int, profile ReleaseProfile, prefs map[string]string) ([]ScoredCandidate, error) {

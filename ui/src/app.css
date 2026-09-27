@@ -1123,6 +1123,57 @@ label.small {
   overflow: hidden;
 }
 
+.modal.settings-dialog {
+  width: min(720px, calc(100vw - 24px));
+}
+
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-tab {
+  padding: 8px 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.settings-tab:hover {
+  color: var(--ink);
+}
+
+.settings-tab.active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+
+.settings-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.settings-body textarea {
+  min-height: 64px;
+}
+
+.settings-footer {
+  margin-top: 16px;
+}
+
+@media (max-width: 560px) {
+  .settings-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 .modal-header {
   display: flex;
   justify-content: space-between;

@@ -12,6 +12,7 @@ import (
 
 	"github.com/Witriol/dlq-download-queue/internal/db"
 	"github.com/Witriol/dlq-download-queue/internal/downloader"
+	"github.com/Witriol/dlq-download-queue/internal/notify"
 	"github.com/Witriol/dlq-download-queue/internal/resolver"
 )
 
@@ -1758,6 +1759,372 @@ func TestRunnerDeletesAllPartsAndSiblingSkipsGracefully(t *testing.T) {
 	}
 	if !eventsContain(events, "archive cleanup: removed 2 file(s)") {
 		t.Fatalf("expected cleanup event for 2 files, got: %v", events)
+	}
+}
+
+func TestRunnerNotifiesCompletedForSingleJob(t *testing.T) {
+	store := newRunnerStore(t)
+	ctx := context.Background()
+	id, err := store.CreateJob(ctx, &Job{URL: "https://example.com/file", OutDir: "/data", MaxAttempts: 1})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	var items []notify.Item
+	runner := &Runner{
+		Store: store,
+		Notify: func(it notify.Item) {
+			items = append(items, it)
+		},
+	}
+
+	if err := runner.markCompleted(ctx, id); err != nil {
+		t.Fatalf("markCompleted: %v", err)
+	}
+
+	if len(items) != 1 {
+		t.Fatalf("expected exactly one notify item, got %d: %+v", len(items), items)
+	}
+	if items[0].Event != notify.EventCompleted {
+		t.Fatalf("expected completed event, got %s", items[0].Event)
+	}
+	if len(items[0].JobIDs) != 1 || items[0].JobIDs[0] != id {
+		t.Fatalf("expected job ids [%d], got %v", id, items[0].JobIDs)
+	}
+	if items[0].GroupKey != "" {
+		t.Fatalf("expected no group key, got %q", items[0].GroupKey)
+	}
+}
+
+func TestRunnerNotifiesCompletedGroupOnceForAllParts(t *testing.T) {
+	store := newRunnerStore(t)
+	ctx := context.Background()
+	outDir := t.TempDir()
+
+	names := []string{"show.part1.rar", "show.part2.rar", "show.part3.rar"}
+	ids := make([]int64, len(names))
+	for i, name := range names {
+		id, err := store.CreateJob(ctx, &Job{
+			URL:         "https://example.com/" + name,
+			OutDir:      outDir,
+			Name:        name,
+			MaxAttempts: 1,
+		})
+		if err != nil {
+			t.Fatalf("create job %s: %v", name, err)
+		}
+		if err := store.UpdateResolving(ctx, id, "https://example.com/"+name, name, 100); err != nil {
+			t.Fatalf("update resolving %s: %v", name, err)
+		}
+		ids[i] = id
+	}
+
+	var items []notify.Item
+	runner := &Runner{
+		Store: store,
+		Notify: func(it notify.Item) {
+			items = append(items, it)
+		},
+	}
+
+	for i, id := range ids {
+		if err := runner.markCompleted(ctx, id); err != nil {
+			t.Fatalf("markCompleted %d: %v", id, err)
+		}
+		if last := i == len(ids)-1; !last && len(items) != 0 {
+			t.Fatalf("expected no notify item before all parts complete, got %d after part %d", len(items), i+1)
+		}
+	}
+
+	if len(items) != 1 {
+		t.Fatalf("expected exactly one notify item for the group, got %d: %+v", len(items), items)
+	}
+	item := items[0]
+	if item.Event != notify.EventCompleted {
+		t.Fatalf("expected completed event, got %s", item.Event)
+	}
+	if item.Parts != 3 {
+		t.Fatalf("expected 3 parts, got %d", item.Parts)
+	}
+	if item.SizeBytes != 300 {
+		t.Fatalf("expected summed size 300, got %d", item.SizeBytes)
+	}
+	if len(item.JobIDs) != 3 {
+		t.Fatalf("expected 3 job ids, got %v", item.JobIDs)
+	}
+	if item.GroupKey == "" {
+		t.Fatalf("expected non-empty group key")
+	}
+}
+
+func TestRunnerNotifiesFailedWhenAttemptsExhausted(t *testing.T) {
+	store := newRunnerStore(t)
+	ctx := context.Background()
+	id, err := store.CreateJob(ctx, &Job{URL: "https://example.com/file", OutDir: "/data", MaxAttempts: 1})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	var items []notify.Item
+	runner := &Runner{
+		Store: store,
+		Notify: func(it notify.Item) {
+			items = append(items, it)
+		},
+	}
+
+	if err := runner.markFailed(ctx, id, "download_error", "boom", time.Time{}); err != nil {
+		t.Fatalf("markFailed: %v", err)
+	}
+
+	if len(items) != 1 {
+		t.Fatalf("expected exactly one notify item, got %d: %+v", len(items), items)
+	}
+	if items[0].Event != notify.EventFailed {
+		t.Fatalf("expected failed event, got %s", items[0].Event)
+	}
+	if items[0].Error != "boom" {
+		t.Fatalf("expected error message, got %q", items[0].Error)
+	}
+}
+
+func TestRunnerNotifiesRetryingWhenAttemptsRemain(t *testing.T) {
+	store := newRunnerStore(t)
+	ctx := context.Background()
+	id, err := store.CreateJob(ctx, &Job{URL: "https://example.com/file", OutDir: "/data", MaxAttempts: 3})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	var items []notify.Item
+	runner := &Runner{
+		Store: store,
+		Notify: func(it notify.Item) {
+			items = append(items, it)
+		},
+	}
+
+	if err := runner.markFailed(ctx, id, "download_error", "boom", time.Now().UTC().Add(time.Minute)); err != nil {
+		t.Fatalf("markFailed: %v", err)
+	}
+
+	if len(items) != 1 {
+		t.Fatalf("expected exactly one notify item, got %d: %+v", len(items), items)
+	}
+	if items[0].Event != notify.EventRetrying {
+		t.Fatalf("expected retrying event, got %s", items[0].Event)
+	}
+}
+
+func TestRunnerNotifiesExtractFailed(t *testing.T) {
+	store := newRunnerStore(t)
+	ctx := context.Background()
+	id, err := store.CreateJob(ctx, &Job{
+		URL:         "https://example.com/archive",
+		OutDir:      "/data",
+		Name:        "archive.zip",
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	var items []notify.Item
+	runner := &Runner{
+		Store: store,
+		Notify: func(it notify.Item) {
+			items = append(items, it)
+		},
+	}
+
+	if err := runner.markPostprocessFailed(ctx, id, "bad password", "archive_decrypt_failed"); err != nil {
+		t.Fatalf("markPostprocessFailed: %v", err)
+	}
+
+	if len(items) != 1 {
+		t.Fatalf("expected exactly one notify item, got %d: %+v", len(items), items)
+	}
+	if items[0].Event != notify.EventExtractFailed {
+		t.Fatalf("expected extract_failed event, got %s", items[0].Event)
+	}
+	if items[0].ErrorCode != "archive_decrypt_failed" {
+		t.Fatalf("expected error code, got %q", items[0].ErrorCode)
+	}
+}
+
+func TestRunnerNotifiesCompletedWithSourceKey(t *testing.T) {
+	store := newRunnerStore(t)
+	ctx := context.Background()
+	id, _, err := store.CreateJobWithSourceKey(ctx, &Job{
+		URL:         "https://example.com/file",
+		OutDir:      "/data",
+		MaxAttempts: 1,
+	}, "series:watch:episode:42")
+	if err != nil {
+		t.Fatalf("create job with source key: %v", err)
+	}
+
+	var items []notify.Item
+	runner := &Runner{
+		Store: store,
+		Notify: func(it notify.Item) {
+			items = append(items, it)
+		},
+	}
+
+	if err := runner.markCompleted(ctx, id); err != nil {
+		t.Fatalf("markCompleted: %v", err)
+	}
+
+	if len(items) != 1 {
+		t.Fatalf("expected exactly one notify item, got %d: %+v", len(items), items)
+	}
+	if items[0].SourceKey != "series:watch:episode:42" {
+		t.Fatalf("expected source key on notify item, got %q", items[0].SourceKey)
+	}
+}
+
+// TestRunnerCompleteDoesNotExposeCompletedStatusBeforeMarkCompleted guards
+// against a multipart double-notify: updateActive's "complete" case must not
+// let a sibling's markCompleted (which holds completeMu) observe this job as
+// completed before this job's own markCompleted runs under the same mutex.
+func TestRunnerCompleteDoesNotExposeCompletedStatusBeforeMarkCompleted(t *testing.T) {
+	store := newRunnerStore(t)
+	ctx := context.Background()
+	id, err := store.CreateJob(ctx, &Job{URL: "https://example.com/file", OutDir: "/data", MaxAttempts: 1})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := store.MarkDownloading(ctx, id, "aria2", "gid-1"); err != nil {
+		t.Fatalf("mark downloading: %v", err)
+	}
+
+	fakeDL := &fakeDownloader{status: &downloader.Status{
+		GID:           "gid-1",
+		Status:        "complete",
+		TotalLength:   "10",
+		CompletedLen:  "10",
+		DownloadSpeed: "0",
+	}}
+	runner := &Runner{Store: store, Downloader: fakeDL}
+
+	// Hold completeMu as a sibling decrypt worker's markCompleted would,
+	// then let updateActive run concurrently up to the point it needs the
+	// same lock.
+	runner.completeMu.Lock()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runner.updateActive(ctx)
+	}()
+
+	waitFor(t, 2*time.Second, func() bool {
+		job, getErr := store.GetJob(ctx, id)
+		return getErr == nil && job.BytesDone == 10
+	})
+
+	job, err := store.GetJob(ctx, id)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if job.Status == StatusCompleted {
+		t.Fatalf("job status leaked as completed before markCompleted acquired completeMu")
+	}
+
+	runner.completeMu.Unlock()
+
+	if err := <-done; err != nil {
+		t.Fatalf("updateActive: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		job, getErr := store.GetJob(ctx, id)
+		return getErr == nil && job.Status == StatusCompleted
+	})
+	job, err = store.GetJob(ctx, id)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if job.Status != StatusCompleted {
+		t.Fatalf("expected completed, got %s", job.Status)
+	}
+	if job.BytesDone != 10 {
+		t.Fatalf("expected bytes_done 10, got %d", job.BytesDone)
+	}
+}
+
+// TestRunnerClearsArchivePasswordBeforeNotifyingCompleted guards against
+// dispatchCompletedDecrypt re-running decrypt on a job whose completed
+// notification already fired: runDecrypt must clear the archive password
+// before markCompleted (and its Notify call), not after.
+func TestRunnerClearsArchivePasswordBeforeNotifyingCompleted(t *testing.T) {
+	store := newRunnerStore(t)
+	ctx := context.Background()
+	id, err := store.CreateJob(ctx, &Job{
+		URL:             "https://example.com/archive",
+		OutDir:          "/data",
+		Name:            "archive.zip",
+		ArchivePassword: sqlNullString("my-secret"),
+		MaxAttempts:     1,
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	fakeDL := &fakeDownloader{}
+	fakeDec := &fakeArchiveDecryptor{attempted: true}
+	var notifyErr error
+	var passwordCleared bool
+	notifyDone := make(chan struct{})
+	runner := &Runner{
+		Store:            store,
+		Resolvers:        resolver.NewRegistry(&fakeResolver{}),
+		Downloader:       fakeDL,
+		ArchiveDecryptor: fakeDec,
+		GetAutoDecrypt:   func() bool { return true },
+		Concurrency:      1,
+		Notify: func(it notify.Item) {
+			defer close(notifyDone)
+			job, getErr := store.GetJob(ctx, id)
+			if getErr != nil {
+				notifyErr = getErr
+				return
+			}
+			passwordCleared = !job.ArchivePassword.Valid
+		},
+	}
+
+	runner.tick(ctx)
+	fakeDL.status = &downloader.Status{
+		GID:           "gid-1",
+		Status:        "complete",
+		TotalLength:   "10",
+		CompletedLen:  "10",
+		DownloadSpeed: "0",
+		Files: []struct {
+			Path string `json:"path"`
+		}{
+			{Path: "/data/archive.zip"},
+		},
+	}
+
+	if err := runner.updateActive(ctx); err != nil {
+		t.Fatalf("updateActive: %v", err)
+	}
+
+	// notifyDone establishes happens-before with the Notify callback so
+	// reading passwordCleared/notifyErr below is race-free.
+	select {
+	case <-notifyDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Notify")
+	}
+
+	if notifyErr != nil {
+		t.Fatalf("notify get job: %v", notifyErr)
+	}
+	if !passwordCleared {
+		t.Fatalf("expected archive password to be cleared before Notify fired")
 	}
 }
 

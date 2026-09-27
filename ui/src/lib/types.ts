@@ -45,6 +45,40 @@ export type Meta = {
   version?: string;
 };
 
+export type TelegramEvents = {
+  completed: boolean;
+  failed: boolean;
+  retrying: boolean;
+  extract_failed: boolean;
+};
+
+/** GET response shape: the stored bot token is replaced by bot_token_set. */
+export type TelegramSettings = {
+  enabled: boolean;
+  bot_token_set: boolean;
+  chat_id: string;
+  events: TelegramEvents;
+  completed_template: string;
+  failure_template: string;
+};
+
+/** POST body: bot_token absent or empty keeps the stored token. */
+export type TelegramSettingsUpdate = {
+  enabled?: boolean;
+  bot_token?: string;
+  chat_id?: string;
+  events?: Partial<TelegramEvents>;
+  completed_template?: string;
+  failure_template?: string;
+};
+
+export type Settings = {
+  concurrency: number;
+  max_attempts: number;
+  auto_decrypt: boolean;
+  telegram?: TelegramSettings;
+};
+
 /** The long-lived series watcher returned by the optional series API. */
 export type SeriesWatch = {
   id: number | string;

@@ -1,4 +1,4 @@
-import type { BatchResult, JobView, Meta, SeriesAttentionEpisode, SeriesEpisode, SeriesPreview, SeriesRefresh, SeriesWatch } from './types';
+import type { BatchResult, JobView, Meta, Settings, SeriesAttentionEpisode, SeriesEpisode, SeriesPreview, SeriesRefresh, SeriesWatch, TelegramSettingsUpdate } from './types';
 
 async function extractError(res: Response): Promise<string> {
   const text = await res.text();
@@ -113,17 +113,27 @@ export async function getMeta(): Promise<Meta> {
   return requestJson<Meta>('/api/meta');
 }
 
-export async function getSettings(): Promise<{ concurrency: number; max_attempts: number; auto_decrypt: boolean }> {
-  return requestJson<{ concurrency: number; max_attempts: number; auto_decrypt: boolean }>('/api/settings');
+export async function getSettings(): Promise<Settings> {
+  return requestJson<Settings>('/api/settings');
 }
 
 export async function updateSettings(
-  updates: { concurrency?: number; max_attempts?: number; auto_decrypt?: boolean }
-): Promise<{ concurrency: number; max_attempts: number; auto_decrypt: boolean }> {
-  return requestJson<{ concurrency: number; max_attempts: number; auto_decrypt: boolean }>('/api/settings', {
+  updates: { concurrency?: number; max_attempts?: number; auto_decrypt?: boolean; telegram?: TelegramSettingsUpdate }
+): Promise<Settings> {
+  return requestJson<Settings>('/api/settings', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(updates)
+  });
+}
+
+export async function testTelegramSettings(
+  payload: { bot_token?: string; chat_id: string; completed_template?: string }
+): Promise<{ status: string }> {
+  return requestJson<{ status: string }>('/api/settings/telegram/test', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload)
   });
 }
 

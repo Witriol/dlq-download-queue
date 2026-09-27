@@ -379,6 +379,31 @@ func TestListPendingArchiveDecryptAndClear(t *testing.T) {
 	}
 }
 
+func TestGetJobReturnsSourceKey(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	id, created, err := store.CreateJobWithSourceKey(ctx, &Job{
+		URL:         "https://example.com/file",
+		OutDir:      "/data",
+		MaxAttempts: 1,
+	}, "series:watch:episode:42")
+	if err != nil {
+		t.Fatalf("create job with source key: %v", err)
+	}
+	if !created {
+		t.Fatalf("expected job to be newly created")
+	}
+
+	job, err := store.GetJob(ctx, id)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if !job.SourceKey.Valid || job.SourceKey.String != "series:watch:episode:42" {
+		t.Fatalf("expected source key to be set, got %+v", job.SourceKey)
+	}
+}
+
 func TestClearAllDoesNotReuseJobIDs(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
