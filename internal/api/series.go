@@ -80,6 +80,23 @@ func (s *Server) handleSeriesRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleSeriesIssues(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if s.Series == nil {
+		writeErr(w, http.StatusServiceUnavailable, errors.New("series watcher not configured"))
+		return
+	}
+	items, err := s.Series.ListIssues(r.Context())
+	if err != nil {
+		writeSeriesErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
 func (s *Server) handleSeriesPreview(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/Witriol/dlq-download-queue/internal/queue"
 )
 
 // Store persists series watches independently from the download queue.
@@ -281,13 +283,16 @@ func (s *Store) ListEpisodes(ctx context.Context, watchID int64) ([]Episode, err
 }
 
 // ListUnfinishedJobEpisodes returns episodes of every watch whose queue job
-// has not reached a final episode state.
+// may still change: not final, or failed (a queue retry revives the job).
 func (s *Store) ListUnfinishedJobEpisodes(ctx context.Context) ([]Episode, error) {
-	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(finalEpisodeStates)), ", ")
-	args := make([]any, 0, len(finalEpisodeStates))
+	var args []any
 	for _, state := range finalEpisodeStates {
+		if state == StateFailed || state == queue.StatusDecryptFail {
+			continue
+		}
 		args = append(args, state)
 	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(args)), ", ")
 	rows, err := s.db.QueryContext(ctx, episodeSelect+` WHERE job_id IS NOT NULL AND state NOT IN (`+placeholders+`) ORDER BY watch_id ASC, id ASC`, args...)
 	if err != nil {
 		return nil, err
@@ -365,6 +370,13 @@ WHERE id = ? AND job_id IS NULL
 	return requireAffected(res)
 }
 
+// resetEpisodeSQL is shared by the bulk and by-id resets so both apply the
+// same SET clause and the same guards.
+const resetEpisodeSQL = `
+UPDATE series_episodes
+SET state = ?, search_attempts = 0, search_started_at = NULL, attention_candidates_json = NULL, updated_at = ?
+WHERE watch_id = ? AND state = ? AND job_id IS NULL AND chosen_webshare_ident IS NULL`
+
 // ResetExhaustedEpisodes makes automatically managed episodes eligible for a
 // fresh release-search lifecycle. It deliberately refuses to touch a durable
 // selection or queue job; those records are the idempotency boundary for a
@@ -373,11 +385,20 @@ func (s *Store) ResetExhaustedEpisodes(ctx context.Context, watchID int64) (int6
 	if watchID <= 0 {
 		return 0, errors.New("watch_id is required")
 	}
-	res, err := s.db.ExecContext(ctx, `
-UPDATE series_episodes
-SET state = ?, search_attempts = 0, search_started_at = NULL, attention_candidates_json = NULL, updated_at = ?
-WHERE watch_id = ? AND state = ? AND job_id IS NULL AND chosen_webshare_ident IS NULL
-`, StateScheduled, time.Now().UTC().Format(time.RFC3339Nano), watchID, StateNeedsAttention)
+	res, err := s.db.ExecContext(ctx, resetEpisodeSQL, StateScheduled, time.Now().UTC().Format(time.RFC3339Nano), watchID, StateNeedsAttention)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// ResetExhaustedEpisode is ResetExhaustedEpisodes for one episode; it returns
+// the number of rows reset (0 when a guard no longer holds).
+func (s *Store) ResetExhaustedEpisode(ctx context.Context, watchID, id int64) (int64, error) {
+	if watchID <= 0 {
+		return 0, errors.New("watch_id is required")
+	}
+	res, err := s.db.ExecContext(ctx, resetEpisodeSQL+` AND id = ?`, StateScheduled, time.Now().UTC().Format(time.RFC3339Nano), watchID, StateNeedsAttention, id)
 	if err != nil {
 		return 0, err
 	}

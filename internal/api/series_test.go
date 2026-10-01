@@ -258,3 +258,44 @@ func jsonNumber(value int64) string {
 	data, _ := json.Marshal(value)
 	return string(data)
 }
+
+func TestSeriesIssuesEndpoint(t *testing.T) {
+	server := newSeriesServer(t)
+	ctx := context.Background()
+	watch, err := server.Series.Create(ctx, series.CreateRequest{TVMazeID: 42, DisplayName: "Some Show", SearchTitle: "Some Show", OutDir: "/data/tv", ReferenceWebshareIdent: "reference", ReferenceFilename: "Some.Show.S01E01.mkv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep, err := server.Series.Store.UpsertEpisode(ctx, series.EpisodeInput{WatchID: watch.ID, TVMazeEpisodeID: 1002, Season: 1, Episode: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Series.Store.SetEpisodeAttention(ctx, ep.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/series/issues", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body []struct {
+		WatchID  int64 `json:"watch_id"`
+		Episodes []struct {
+			Kind           string `json:"kind"`
+			CandidateCount int    `json:"candidate_count"`
+		} `json:"episodes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body) != 1 || body[0].WatchID != watch.ID || len(body[0].Episodes) != 1 || body[0].Episodes[0].Kind != "not_found" {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+
+	post := httptest.NewRecorder()
+	server.Handler().ServeHTTP(post, httptest.NewRequest(http.MethodPost, "/series/issues", nil))
+	if post.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("post status = %d; want 405", post.Code)
+	}
+}

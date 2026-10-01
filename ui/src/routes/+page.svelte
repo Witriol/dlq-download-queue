@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { addJobsBatch, clearJobs, getEvents, getMeta, getSettings, listJobs, listSeries, postAction, postGroupAction, testTelegramSettings, updateSettings } from '$lib/api';
+  import { addJobsBatch, clearJobs, getEvents, getMeta, getSettings, listJobs, listSeries, postAction, postGroupAction, summarizeSeriesIssues, testTelegramSettings, updateSettings } from '$lib/api';
   import { displayStatus } from '$lib/status';
   import { humanBytes, humanDuration, localTimeZone } from '$lib/format';
   import { countsFor, detectSite, parseUrls, sortJobs } from '$lib/job-utils';
@@ -113,10 +113,7 @@
   $: overallEtaHint = inProgressJobs.length > 0 && inProgressKnownSizeCount < inProgressJobs.length
     ? `${inProgressKnownSizeCount}/${inProgressJobs.length} sized`
     : '';
-  $: seriesAttentionCount = seriesWatches.reduce((total, watch) => {
-    const attention = Number(watch.attention_count) || 0;
-    return total + attention + (watch.last_error ? 1 : 0);
-  }, 0);
+  $: seriesIssueSummary = summarizeSeriesIssues(seriesWatches);
 
   async function refresh() {
     lastError = '';
@@ -550,8 +547,10 @@
         <button class:active={activeTab === 'queue'} role="tab" aria-selected={activeTab === 'queue'} aria-controls="queue-panel" id="queue-tab" tabindex={activeTab === 'queue' ? 0 : -1} type="button" disabled={watcherModalOpen} on:click={() => selectTab('queue')} on:keydown={handleTabKey}>Queue</button>
         <button class:active={activeTab === 'automations'} role="tab" aria-selected={activeTab === 'automations'} aria-controls="automations-panel" id="automations-tab" tabindex={activeTab === 'automations' ? 0 : -1} type="button" disabled={watcherModalOpen} on:click={() => selectTab('automations')} on:keydown={handleTabKey}>
           Automations
-          {#if seriesAttentionCount > 0}
-            <span class="tab-badge" aria-label={`${seriesAttentionCount} automation${seriesAttentionCount === 1 ? '' : 's'} need${seriesAttentionCount === 1 ? 's' : ''} attention`}>{seriesAttentionCount}</span>
+          {#if seriesIssueSummary.action > 0}
+            <span class="tab-badge" aria-label={`${seriesIssueSummary.action} series need action`}>{seriesIssueSummary.action}</span>
+          {:else if seriesIssueSummary.notFound > 0}
+            <span class="tab-badge muted" aria-label={`${seriesIssueSummary.notFound} series ${seriesIssueSummary.notFound === 1 ? 'has' : 'have'} episodes not found`}>{seriesIssueSummary.notFound}</span>
           {/if}
         </button>
       </div>

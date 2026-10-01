@@ -1445,6 +1445,36 @@ func TestSyncJobStateSkipsEpisodeWhenJobRemoved(t *testing.T) {
 	}
 }
 
+func TestSyncSkipsFailedEpisodeWhenJobRemoved(t *testing.T) {
+	for _, failed := range []string{StateFailed, queue.StatusDecryptFail} {
+		t.Run(failed, func(t *testing.T) {
+			manager, store, watchID := newQueuedEpisodeFixture(t)
+			ctx := context.Background()
+			manager.JobState = func(context.Context, int64) (JobStatus, error) { return JobStatus{Status: failed}, nil }
+			if err := manager.syncUnfinishedJobs(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if state := episodeState(t, store, watchID); state != failed {
+				t.Fatalf("state = %q; want %q", state, failed)
+			}
+			manager.JobState = func(context.Context, int64) (JobStatus, error) { return JobStatus{Status: queue.StatusDeleted}, nil }
+			if err := manager.syncUnfinishedJobs(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if state := episodeState(t, store, watchID); state != StateSkipped {
+				t.Fatalf("state = %q; want skipped", state)
+			}
+			view, err := manager.Get(ctx, watchID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if view.Issues != (IssueCounts{}) {
+				t.Fatalf("issues = %+v; want none", view.Issues)
+			}
+		})
+	}
+}
+
 func TestSyncJobStateIgnoresRemovedJobOnFinalEpisode(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1831,5 +1861,179 @@ func TestEpisodeForSourceKeyUnknownWatchReturnsError(t *testing.T) {
 	_, _, err := manager.EpisodeForSourceKey(context.Background(), "series:999:episode:1")
 	if err == nil {
 		t.Fatalf("expected an error for an unknown watch id")
+	}
+}
+
+const issueSnapshot = `[{"ident":"candidate","filename":"Some.Show.S01E02.mkv","accepted":true}]`
+
+// addIssueEpisode inserts an episode and puts it in state; snapshot is only
+// stored for needs_attention.
+func addIssueEpisode(t *testing.T, store *Store, watchID, id int64, season, episode int, state, snapshot string) {
+	t.Helper()
+	ctx := context.Background()
+	ep, err := store.UpsertEpisode(ctx, EpisodeInput{WatchID: watchID, TVMazeEpisodeID: id, Season: season, Episode: episode})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state == StateNeedsAttention {
+		err = store.SetEpisodeAttention(ctx, ep.ID, snapshot)
+	} else {
+		err = store.SetEpisodeState(ctx, ep.ID, state)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestViewClassifiesIssues(t *testing.T) {
+	manager, store, _, watchID := newManagerFixture(t, FallbackManual, "x.mkv", 0)
+	ctx := context.Background()
+	addIssueEpisode(t, store, watchID, 2001, 2, 1, StateNeedsAttention, issueSnapshot)
+	addIssueEpisode(t, store, watchID, 2002, 2, 2, StateNeedsAttention, "[]")
+	addIssueEpisode(t, store, watchID, 2003, 2, 3, StateNeedsAttention, "")
+	addIssueEpisode(t, store, watchID, 2004, 2, 4, StateNeedsAttention, "{broken")
+	addIssueEpisode(t, store, watchID, 2005, 2, 5, StateFailed, "")
+	addIssueEpisode(t, store, watchID, 2006, 2, 6, queue.StatusDecryptFail, "")
+	addIssueEpisode(t, store, watchID, 2007, 2, 7, StateCompleted, "")
+	got, err := manager.Get(ctx, watchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := IssueCounts{ChooseRelease: 1, NotFound: 3, DownloadFailed: 2}
+	if got.Issues != want {
+		t.Fatalf("issues = %+v; want %+v", got.Issues, want)
+	}
+	if got.AttentionCount != 4 {
+		t.Fatalf("attention_count = %d; want 4", got.AttentionCount)
+	}
+}
+
+func TestListIssues(t *testing.T) {
+	manager, store, _, watchID := newManagerFixture(t, FallbackManual, "x.mkv", 0)
+	ctx := context.Background()
+	addIssueEpisode(t, store, watchID, 2001, 3, 1, StateFailed, "")
+	addIssueEpisode(t, store, watchID, 2002, 1, 9, StateNeedsAttention, "[]")
+	addIssueEpisode(t, store, watchID, 2003, 1, 5, StateNeedsAttention, issueSnapshot)
+	addIssueEpisode(t, store, watchID, 2004, 1, 6, StateCompleted, "")
+
+	// A second watch with only a check error sorts first by name.
+	errID, err := store.CreateWatch(ctx, &Watch{Enabled: true, TVMazeID: 43, DisplayName: "Alpha", SearchTitle: "Alpha", OutDir: "/data/tv", QualityProfileJSON: "{}", StartMode: StartModeSpecific, FallbackPolicy: FallbackStrict})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := store.UpdateWatchCheck(ctx, errID, &now, &now, "boom"); err != nil {
+		t.Fatal(err)
+	}
+	// A third watch without issues is omitted.
+	if _, err := store.CreateWatch(ctx, &Watch{Enabled: true, TVMazeID: 44, DisplayName: "Clean", SearchTitle: "Clean", OutDir: "/data/tv", QualityProfileJSON: "{}", StartMode: StartModeSpecific, FallbackPolicy: FallbackStrict}); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := manager.ListIssues(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 2 || out[0].DisplayName != "Alpha" || out[1].WatchID != watchID {
+		t.Fatalf("issues = %+v", out)
+	}
+	if out[0].LastError != "boom" || len(out[0].Episodes) != 0 {
+		t.Fatalf("error-only watch = %+v", out[0])
+	}
+	eps := out[1].Episodes
+	if len(eps) != 3 {
+		t.Fatalf("episodes = %+v", eps)
+	}
+	wantKinds := []struct {
+		season, episode, candidates int
+		kind                        issueKind
+	}{{1, 5, 1, issueChooseRelease}, {1, 9, 0, issueNotFound}, {3, 1, 0, issueDownloadFailed}}
+	for i, w := range wantKinds {
+		e := eps[i]
+		if e.Season != w.season || e.Episode != w.episode || e.Kind != w.kind || e.CandidateCount != w.candidates {
+			t.Fatalf("episode %d = %+v; want %+v", i, e, w)
+		}
+	}
+}
+
+func TestListIssuesFillsJobError(t *testing.T) {
+	manager, store, watchID := newQueuedEpisodeFixture(t)
+	ctx := context.Background()
+	eps, err := store.ListEpisodes(ctx, watchID)
+	if err != nil || len(eps) == 0 {
+		t.Fatalf("episodes = %+v, err = %v", eps, err)
+	}
+	if err := store.SetEpisodeState(ctx, eps[0].ID, StateFailed); err != nil {
+		t.Fatal(err)
+	}
+	manager.JobState = func(context.Context, int64) (JobStatus, error) {
+		return JobStatus{Status: StateFailed, Error: "boom"}, nil
+	}
+	out, err := manager.ListIssues(ctx)
+	if err != nil || len(out) != 1 || len(out[0].Episodes) != 1 {
+		t.Fatalf("issues = %+v, err = %v", out, err)
+	}
+	if e := out[0].Episodes[0]; e.Kind != issueDownloadFailed || e.JobError != "boom" || e.JobStatus != StateFailed {
+		t.Fatalf("episode = %+v", e)
+	}
+	if state := episodeState(t, store, watchID); state != StateFailed {
+		t.Fatalf("ListIssues changed state to %q", state)
+	}
+}
+
+func TestCheckNowResetsEveryNotFoundManualEpisode(t *testing.T) {
+	manager, store, _, watchID := newManagerFixture(t, FallbackManual, "x.mkv", 0)
+	ctx := context.Background()
+	addIssueEpisode(t, store, watchID, 2001, 1, 5, StateNeedsAttention, issueSnapshot)
+	addIssueEpisode(t, store, watchID, 2002, 1, 6, StateNeedsAttention, "")
+	addIssueEpisode(t, store, watchID, 2003, 1, 7, StateNeedsAttention, "[]")
+	addIssueEpisode(t, store, watchID, 2004, 1, 8, StateNeedsAttention, "[ ]")
+	addIssueEpisode(t, store, watchID, 2005, 1, 9, StateNeedsAttention, "{broken")
+	if _, err := manager.CheckNow(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	eps, err := store.ListEpisodes(ctx, watchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range eps {
+		kept := e.State == StateNeedsAttention
+		if want := e.Episode == 5; kept != want {
+			t.Fatalf("episode %d state = %q; kept = %v, want %v", e.Episode, e.State, kept, want)
+		}
+	}
+	if got := countEvents(t, store, watchID, "exhausted release searches reset by manual check"); got != 1 {
+		t.Fatalf("reset events = %d; want 1", got)
+	}
+}
+
+func TestSyncFollowsRetriedFailedJob(t *testing.T) {
+	for _, failed := range []string{StateFailed, queue.StatusDecryptFail} {
+		t.Run(failed, func(t *testing.T) {
+			manager, store, watchID := newQueuedEpisodeFixture(t)
+			ctx := context.Background()
+			job := JobStatus{Status: failed, Error: "boom"}
+			manager.JobState = func(context.Context, int64) (JobStatus, error) { return job, nil }
+			if err := manager.CheckDue(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if state := episodeState(t, store, watchID); state != failed {
+				t.Fatalf("state = %q; want %q", state, failed)
+			}
+			job = JobStatus{Status: queue.StatusQueued}
+			if err := manager.CheckDue(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if state := episodeState(t, store, watchID); state != StateQueued {
+				t.Fatalf("after retry state = %q; want queued", state)
+			}
+			job = JobStatus{Status: StateCompleted}
+			if err := manager.CheckDue(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if state := episodeState(t, store, watchID); state != StateCompleted {
+				t.Fatalf("after completion state = %q; want completed", state)
+			}
+		})
 	}
 }

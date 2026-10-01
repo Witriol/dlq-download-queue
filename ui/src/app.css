@@ -2024,8 +2024,8 @@ html { scrollbar-gutter: stable; }
 .series-status,
 .candidate-decision { display: inline-flex; padding: 3px 9px; border: 1px solid rgba(34,197,94,.35); border-radius: 999px; color: #bbf7d0; background: rgba(34,197,94,.14); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
 .series-status[data-status="paused"], .series-status[data-status="disabled"] { color: #fde68a; background: rgba(245,158,11,.14); border-color: rgba(245,158,11,.35); }
-.series-status[data-status="needs_attention"], .series-status.attention { color: #fecaca; background: rgba(244,63,94,.15); border-color: rgba(244,63,94,.4); }
-.series-status[data-status="ended"], .series-status[data-status="idle"] { color: #cbd5e1; background: rgba(148,163,184,.14); border-color: rgba(148,163,184,.35); }
+.series-status[data-status="needs_attention"], .series-status[data-status="check_failed"], .series-status[data-status="choose_release"], .series-status[data-status="download_failed"], .series-status.attention { color: #fecaca; background: rgba(244,63,94,.15); border-color: rgba(244,63,94,.4); }
+.series-status[data-status="ended"], .series-status[data-status="idle"], .series-status[data-status="not_found"] { color: #cbd5e1; background: rgba(148,163,184,.14); border-color: rgba(148,163,184,.35); }
 .series-status.status-btn { cursor: pointer; font: inherit; }
 .series-status.status-btn:hover, .series-status.status-btn:focus-visible { border-color: currentColor; }
 .series-empty { padding: 34px 12px 20px; text-align: center; color: var(--muted); }
@@ -2127,6 +2127,27 @@ html { scrollbar-gutter: stable; }
 .attention-episode-header small { color: var(--muted); font-size: 11px; }
 .attention-candidate { align-items: start; }
 .attention-candidate > .btn { grid-column: 1 / -1; justify-self: start; }
+.issues-count { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; margin-left: 4px; padding: 0 5px; border-radius: 999px; background: var(--danger); color: #fff; font-size: 10px; font-weight: 700; line-height: 16px; }
+.issues-count.muted, .app-tabs .tab-badge.muted { background: rgba(148,163,184,.35); color: var(--ink); }
+.series-issues-dialog { width: min(760px, 94vw); max-height: min(88vh, 820px); overflow: auto; }
+.issues-list { display: grid; gap: 14px; margin-top: 16px; }
+.issues-watch { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: rgba(18,24,34,.5); scroll-margin-top: 8px; }
+.issues-watch.focused { border-color: rgba(244,63,94,.4); }
+.issues-watch-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.issues-watch-header h3 { font-size: 14px; overflow-wrap: anywhere; }
+.issues-watch-label { display: block; color: var(--muted); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
+.issues-watch-header small { color: var(--muted); font-size: 11px; }
+.issues-hint { margin: 0; font-size: 12px; }
+.issues-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.issues-row-main { display: grid; gap: 6px; min-width: 0; justify-items: start; }
+.issues-row-main p { margin: 0; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.issues-row > .btn { flex: 0 0 auto; }
+.issues-episodes summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+.issues-episodes ul { margin: 6px 0 0; padding: 0; list-style: none; display: grid; gap: 3px; font-size: 12px; }
+.issues-episodes small { color: var(--muted); }
+@media (max-width: 600px) {
+  .issues-row { flex-direction: column; }
+}
 .series-browser { width: min(650px, 94vw); }
 .series-browser .browser-path-toolbar { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 6px 0; color: var(--muted); font-size: 12px; }
 .series-browser .browser-path-toolbar .actions { margin-left: auto; }
@@ -2170,7 +2191,7 @@ label.series-checkbox { display: flex; align-items: center; gap: 8px; color: var
   .automation-stats .stat span { font-size: 9px; }
   .table-toolbar.automation-toolbar { align-items: center; gap: 8px; }
   .automation-toolbar .muted { display: none; }
-  .automation-toolbar .actions { gap: 5px; }
+  .automation-toolbar .actions { gap: 5px; flex: 0 1 auto; min-width: 0; flex-wrap: wrap; justify-content: flex-end; }
   .automation-toolbar .actions .btn { min-height: 34px; padding: 6px 9px; font-size: 11px; }
   .modal.panel.series-wizard { width: 100%; height: 100%; max-height: 100%; padding: 16px 14px calc(12px + env(safe-area-inset-bottom)); }
   .series-wizard .modal-header h2 { font-size: 21px; }

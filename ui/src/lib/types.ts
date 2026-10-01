@@ -100,6 +100,8 @@ export type SeriesWatch = {
   last_error?: string;
   status?: string;
   attention_count?: number;
+  /** Per-kind issue episode counts; missing means all zeros. */
+  issues?: SeriesIssueCounts;
   next_episode?: SeriesEpisode | null;
   /** The watch's next release search: next_check_at during an active search, else the earliest upcoming searchable time. Empty when neither. */
   next_search_at?: string;
@@ -125,6 +127,34 @@ export type SeriesEpisode = {
   job_id?: number;
   /** Episode row updated_at; for completed episodes this is the download-finished time. */
   updated_at?: string;
+};
+
+export type SeriesIssueCounts = {
+  choose_release?: number;
+  not_found?: number;
+  download_failed?: number;
+};
+
+export type SeriesIssueKind = 'choose_release' | 'not_found' | 'download_failed';
+
+export type SeriesIssueEpisode = SeriesEpisode & {
+  kind: SeriesIssueKind;
+  candidate_count?: number;
+  job_error?: string;
+  /** Current queue job status; empty when unknown. */
+  job_status?: string;
+};
+
+/** One watch with its issue episodes from GET /series/issues. */
+export type SeriesIssueWatch = {
+  watch_id: number | string;
+  display_name: string;
+  enabled: boolean;
+  show_status?: string;
+  fallback_policy?: string;
+  last_error?: string;
+  last_checked_at?: string;
+  episodes: SeriesIssueEpisode[];
 };
 
 /** An episode waiting for a manual fallback decision and its persisted alternatives. */

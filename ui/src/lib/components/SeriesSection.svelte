@@ -1,10 +1,11 @@
 <script>
   import { onMount, tick } from 'svelte';
   import { formatAirTime, formatDateTime, formatDateTimeShort, localTimeZone, relativeTime } from '$lib/format';
-  import { createSeries, getSeriesEvents, getSeriesRefresh, listSeries, listSeriesAttention, previewSeries, refreshSeries, searchTVMaze, selectSeriesCandidate, seriesAction, updateSeries } from '$lib/api';
+  import { createSeries, getSeriesEvents, getSeriesIssues, getSeriesRefresh, listSeries, listSeriesAttention, postAction, previewSeries, refreshSeries, searchTVMaze, selectSeriesCandidate, seriesAction, summarizeSeriesIssues, updateSeries } from '$lib/api';
   import FolderBrowser from '$lib/components/FolderBrowser.svelte';
   import LogsModal from '$lib/components/LogsModal.svelte';
   import SeriesAttentionModal from '$lib/components/SeriesAttentionModal.svelte';
+  import SeriesIssuesModal from '$lib/components/SeriesIssuesModal.svelte';
   import SeriesEditModal from '$lib/components/SeriesEditModal.svelte';
   import SeriesWizard from '$lib/components/SeriesWizard.svelte';
 
@@ -59,6 +60,12 @@
   let attentionLoading = false;
   let attentionError = '';
   let attentionBusy = '';
+  let issuesOpen = false;
+  let issuesWatches = [];
+  let issuesLoading = false;
+  let issuesError = '';
+  let issuesBusy = '';
+  let issuesFocusId = null;
   let showLogs = false;
   let logsWatch = null;
   let logsEvents = [];
@@ -106,7 +113,11 @@
       status: watch.status || (watch.enabled === false ? 'paused' : 'active'),
       next_episode: watch.next_episode || watch.next || null,
       last_episode: watch.last_episode || watch.last || null,
-      attention_count: Number(watch.attention_count || watch.problem_count || 0)
+      issues: {
+        choose_release: Number(watch.issues?.choose_release) || 0,
+        not_found: Number(watch.issues?.not_found) || 0,
+        download_failed: Number(watch.issues?.download_failed) || 0
+      }
     };
   }
 
@@ -434,10 +445,89 @@
   }
 
   function closeAttention() {
-    if (attentionBusy) return;
+    if (attentionBusy) {
+      return;
+    }
     attentionWatch = null;
     attentionEpisodes = [];
     attentionError = '';
+    if (issuesOpen) loadIssues();
+  }
+
+  async function loadIssues() {
+    issuesLoading = true;
+    issuesError = '';
+    try {
+      issuesWatches = await getSeriesIssues();
+    } catch (err) {
+      issuesError = err instanceof Error ? err.message : String(err);
+    } finally {
+      issuesLoading = false;
+    }
+  }
+
+  function openIssues(watchId = null) {
+    issuesFocusId = watchId;
+    issuesError = '';
+    issuesBusy = '';
+    issuesOpen = true;
+    loadIssues();
+  }
+
+  function closeIssues() {
+    if (issuesBusy) {
+      return;
+    }
+    issuesOpen = false;
+    issuesFocusId = null;
+  }
+
+  async function runIssueAction(watch, key, run) {
+    issuesError = '';
+    issuesBusy = `${watch.watch_id}:${key}`;
+    try {
+      await run();
+    } catch (err) {
+      issuesError = err instanceof Error ? err.message : String(err);
+    }
+    // Reload even on failure: a partial retry still changed state.
+    try {
+      await loadIssues();
+      await refresh();
+      onChanged();
+    } catch (err) {
+      issuesError ||= err instanceof Error ? err.message : String(err);
+    } finally {
+      issuesBusy = '';
+    }
+  }
+
+  function issueChooseRelease(issueWatch) {
+    const watch = watches.find((w) => String(w.id) === String(issueWatch.watch_id));
+    if (watch) {
+      openAttention(watch);
+    }
+  }
+
+  function issueSearchAgain(issueWatch, key) {
+    return runIssueAction(issueWatch, key, () => seriesAction(issueWatch.watch_id, 'check-now'));
+  }
+
+  function issueRetryJobs(issueWatch, key, jobIds) {
+    return runIssueAction(issueWatch, key, async () => {
+      const results = await Promise.allSettled(jobIds.map((id) => postAction(id, 'retry')));
+      const failedIds = jobIds.filter((_, i) => results[i].status === 'rejected');
+      if (failedIds.length > 0) {
+        throw new Error(`Retry failed for job${failedIds.length === 1 ? '' : 's'} ${failedIds.join(', ')}.`);
+      }
+    });
+  }
+
+  function issueViewLog(issueWatch) {
+    const watch = watches.find((w) => String(w.id) === String(issueWatch.watch_id));
+    if (watch) {
+      openLogs(watch);
+    }
   }
 
   async function queueCandidate(episode, candidate) {
@@ -638,7 +728,7 @@
         return { label: `Downloaded ${relativeTime(ep.updated_at)}${suffix}`, at: ep.updated_at };
       }
       case 'needs_attention':
-        return { label: 'Needs review', at: null };
+        return { label: watch.issues?.choose_release > 0 ? 'Choose release' : 'Not found', at: null };
       case 'failed':
         return { label: 'Download failed', at: null };
       default:
@@ -648,8 +738,26 @@
 
   function statusTag(watch) {
     if (!watch.enabled) return 'paused';
-    if (watch.attention_count > 0 || watch.status === 'needs_attention') return 'needs_attention';
+    if (worstIssue(watch)) return 'needs_attention';
     return 'active';
+  }
+
+  /** Highest-priority issue on a watch: check failed > choose release > download failed > not found. */
+  function worstIssue(watch) {
+    const issues = watch.issues || {};
+    if (watch.last_error) {
+      return { kind: 'check_failed', label: 'Check failed', title: watch.last_error };
+    }
+    if (issues.choose_release > 0) {
+      return { kind: 'choose_release', label: 'Choose release', title: 'Choose a release for the waiting episodes' };
+    }
+    if (issues.download_failed > 0) {
+      return { kind: 'download_failed', label: 'Download failed', title: 'Review failed downloads' };
+    }
+    if (issues.not_found > 0) {
+      return { kind: 'not_found', label: `Not found (${issues.not_found})`, title: 'No matching release was found for these episodes' };
+    }
+    return null;
   }
 
   /** Inline series-name badge; null when plain active (no badge shown). */
@@ -657,7 +765,8 @@
     const tag = statusTag(watch);
     if (tag === 'paused') return { tag: 'paused', label: 'Paused', clickable: false, title: null };
     if (tag === 'needs_attention') {
-      return { tag: 'needs_attention', label: 'Needs review', clickable: true, title: `Review ${watch.attention_count} warning${watch.attention_count === 1 ? '' : 's'}` };
+      const issue = worstIssue(watch);
+      return { tag: issue.kind, label: issue.label, clickable: true, title: issue.title };
     }
     if (watch.show_status === 'Ended') return { tag: 'ended', label: 'Ended', clickable: false, title: null };
     if (isIdle(watch)) return { tag: 'idle', label: 'Off-season', clickable: false, title: 'No upcoming episode announced on TVmaze; refreshed daily' };
@@ -766,9 +875,9 @@
     refreshTimer = setInterval(refresh, 15000);
   }
 
-  $: watcherModalOpen = showWizard || Boolean(editing) || browserOpen || Boolean(attentionWatch) || showLogs;
+  $: watcherModalOpen = showWizard || Boolean(editing) || browserOpen || Boolean(attentionWatch) || issuesOpen || showLogs;
   $: activeWatchCount = watches.filter((watch) => watch.enabled).length;
-  $: attentionCount = watches.reduce((total, watch) => total + watch.attention_count, 0);
+  $: issueSummary = summarizeSeriesIssues(watches);
   $: scheduledCount = watches.filter((watch) => Boolean(watch.next_episode || watch.next_episode_at)).length;
   $: visibleCandidates = candidates.filter((candidate) => !hasDifferentSeriesTitle(candidate));
   $: pickedCandidate = pickWatcherCandidate(visibleCandidates);
@@ -808,7 +917,7 @@
   <div class="stats automation-stats" aria-label="Automation overview">
     <div class="stat stat-active"><span>Active</span><strong>{activeWatchCount}</strong></div>
     <div class="stat stat-eta"><span>Episodes on deck</span><strong>{scheduledCount}</strong></div>
-    <div class="stat" class:stat-failed={attentionCount > 0}><span>Warnings</span><strong>{attentionCount}</strong></div>
+    <div class="stat" class:stat-failed={issueSummary.action > 0}><span>Need action</span><strong>{issueSummary.action}</strong></div>
   </div>
 
   <div class="panel automation-panel">
@@ -819,6 +928,7 @@
         {#if watches.length > 0 && refreshInfo}<p class="muted" title={formatDateTimeShort(refreshInfo.next_refresh_at)}>TVmaze schedule refreshes daily at {refreshTimeOfDay(refreshInfo.next_refresh_at)} · next {relativeTime(refreshInfo.next_refresh_at)}</p>{/if}
       </div>
       <div class="actions">
+        {#if watches.length > 0}<button class="btn ghost" type="button" title="Series with failed checks, failed downloads or episodes to review" aria-label={issueSummary.action > 0 ? `Issues: ${issueSummary.action} series need action` : (issueSummary.notFound > 0 ? `Issues: ${issueSummary.notFound} series have episodes not found` : (issueSummary.any > 0 ? 'Issues: only on paused series' : 'Issues: none'))} on:click={() => openIssues()} disabled={issueSummary.any === 0}>Issues{#if issueSummary.action > 0} <span class="issues-count">{issueSummary.action}</span>{:else if issueSummary.notFound > 0} <span class="issues-count muted">{issueSummary.notFound}</span>{/if}</button>{/if}
         {#if watches.length > 0}<button class="btn ghost" type="button" title="Refresh the TVmaze schedule and search due episodes for every series" on:click={refreshNow} disabled={refreshBusy}>{refreshBusy ? 'Checking…' : 'Check all'}</button>{/if}
         <button class="btn ghost" type="button" on:click={refresh} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</button>
         <button class="btn primary" type="button" on:click={openWizard}>Add series</button>
@@ -853,7 +963,7 @@
                     <strong>{watch.display_name}</strong>
                     {#if badge}
                       {#if badge.clickable}
-                        <button type="button" class="series-status status-btn" data-status={badge.tag} title={badge.title} on:click={() => openAttention(watch)}>{badge.label}</button>
+                        <button type="button" class="series-status status-btn" data-status={badge.tag} title={badge.title} on:click={() => openIssues(watch.id)}>{badge.label}</button>
                       {:else}
                         <span class="series-status" data-status={badge.tag}>{badge.label}</span>
                       {/if}
@@ -940,6 +1050,22 @@
   {formatDate}
   {candidateName}
   {reasons}
+/>
+
+<SeriesIssuesModal
+  show={issuesOpen && !attentionWatch && !showLogs}
+  watches={issuesWatches}
+  loading={issuesLoading}
+  error={issuesError}
+  busy={issuesBusy}
+  focusWatchId={issuesFocusId}
+  onClose={closeIssues}
+  onChooseRelease={issueChooseRelease}
+  onSearchAgain={issueSearchAgain}
+  onRetryJobs={issueRetryJobs}
+  onViewLog={issueViewLog}
+  {formatDate}
+  {episodeCode}
 />
 
 <SeriesEditModal

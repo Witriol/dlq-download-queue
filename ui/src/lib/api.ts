@@ -1,4 +1,4 @@
-import type { BatchResult, JobView, Meta, Settings, SeriesAttentionEpisode, SeriesEpisode, SeriesPreview, SeriesRefresh, SeriesWatch, TelegramSettingsUpdate } from './types';
+import type { BatchResult, JobView, Meta, Settings, SeriesAttentionEpisode, SeriesEpisode, SeriesIssueWatch, SeriesPreview, SeriesRefresh, SeriesWatch, TelegramSettingsUpdate } from './types';
 
 async function extractError(res: Response): Promise<string> {
   const text = await res.text();
@@ -180,6 +180,36 @@ export async function refreshSeries(): Promise<SeriesRefresh> {
     headers: { 'content-type': 'application/json' },
     body: '{}'
   });
+}
+
+export async function getSeriesIssues(): Promise<SeriesIssueWatch[]> {
+  const value = await requestJson<unknown>('/api/series/issues');
+  return Array.isArray(value) ? value as SeriesIssueWatch[] : [];
+}
+
+/** Counts enabled series needing action (red) and, separately, those with only not-found episodes (grey); `any` also counts paused series. */
+export function summarizeSeriesIssues(watches: SeriesWatch[]): { action: number; notFound: number; any: number } {
+  let action = 0;
+  let notFound = 0;
+  let any = 0;
+  for (const watch of watches) {
+    const issues = watch.issues ?? {};
+    const needsAction = (issues.choose_release ?? 0) + (issues.download_failed ?? 0) > 0 || Boolean(watch.last_error);
+    const hasNotFound = (issues.not_found ?? 0) > 0;
+    if (needsAction || hasNotFound) {
+      any++;
+    }
+    if (watch.enabled === false || watch.status === 'paused') {
+      continue;
+    }
+    if (needsAction) {
+      action++;
+    }
+    if (hasNotFound) {
+      notFound++;
+    }
+  }
+  return { action, notFound, any };
 }
 
 export type SeriesDraft = {

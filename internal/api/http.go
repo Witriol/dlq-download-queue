@@ -61,6 +61,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/series", s.handleSeries)
 	mux.HandleFunc("/series/preview", s.handleSeriesPreview)
 	mux.HandleFunc("/series/refresh", s.handleSeriesRefresh)
+	mux.HandleFunc("/series/issues", s.handleSeriesIssues)
 	mux.HandleFunc("/series/", s.handleSeriesItem)
 	mux.HandleFunc("/tvmaze/search", s.handleTVMazeSearch)
 	return withRequestLimit(mux, maxRequestBodyBytes)

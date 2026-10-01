@@ -156,6 +156,41 @@ type AttentionEpisodeView struct {
 	Candidates []CandidateView `json:"candidates"`
 }
 
+type issueKind string
+
+const (
+	issueNone           issueKind = ""
+	issueChooseRelease  issueKind = "choose_release"
+	issueNotFound       issueKind = "not_found"
+	issueDownloadFailed issueKind = "download_failed"
+)
+
+// IssueCounts classifies a watch's problem episodes; see episodeIssue.
+type IssueCounts struct {
+	ChooseRelease  int `json:"choose_release"`
+	NotFound       int `json:"not_found"`
+	DownloadFailed int `json:"download_failed"`
+}
+
+type IssueEpisodeView struct {
+	EpisodeView
+	Kind           issueKind `json:"kind"`
+	CandidateCount int       `json:"candidate_count"`
+	JobError       string    `json:"job_error"`
+	JobStatus      string    `json:"job_status"`
+}
+
+type WatchIssuesView struct {
+	WatchID        int64              `json:"watch_id"`
+	DisplayName    string             `json:"display_name"`
+	Enabled        bool               `json:"enabled"`
+	ShowStatus     string             `json:"show_status"`
+	FallbackPolicy string             `json:"fallback_policy"`
+	LastError      string             `json:"last_error"`
+	LastCheckedAt  string             `json:"last_checked_at"`
+	Episodes       []IssueEpisodeView `json:"episodes"`
+}
+
 type SelectAttentionCandidateRequest struct {
 	Ident string `json:"ident"`
 }
@@ -180,6 +215,7 @@ type WatchView struct {
 	ShowStatus             string          `json:"show_status"`
 	Status                 string          `json:"status"`
 	AttentionCount         int             `json:"attention_count"`
+	Issues                 IssueCounts     `json:"issues"`
 	NextEpisode            *EpisodeView    `json:"next_episode,omitempty"`
 	NextSearchAt           string          `json:"next_search_at,omitempty"`
 	LastEpisode            *EpisodeView    `json:"last_episode,omitempty"`
@@ -362,6 +398,49 @@ func (m *Manager) List(ctx context.Context) ([]WatchView, error) {
 		}
 		out = append(out, *v)
 	}
+	return out, nil
+}
+
+// ListIssues returns, by display name, the watches with a problem episode or
+// a failed check. It only reads: JobState is queried for display.
+func (m *Manager) ListIssues(ctx context.Context) ([]WatchIssuesView, error) {
+	watches, err := m.Store.ListWatches(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]WatchIssuesView, 0)
+	for _, w := range watches {
+		eps, err := m.Store.ListEpisodes(ctx, w.ID)
+		if err != nil {
+			return nil, err
+		}
+		item := WatchIssuesView{
+			WatchID: w.ID, DisplayName: w.DisplayName, Enabled: w.Enabled, ShowStatus: w.ShowStatus,
+			FallbackPolicy: w.FallbackPolicy, LastError: nullString(w.LastError), LastCheckedAt: nullString(w.LastCheckedAt),
+			Episodes: []IssueEpisodeView{},
+		}
+		for _, ep := range eps {
+			kind, candidates := episodeIssue(ep)
+			if kind == issueNone {
+				continue
+			}
+			iv := IssueEpisodeView{EpisodeView: episodeView(ep), Kind: kind, CandidateCount: candidates}
+			if kind == issueDownloadFailed && ep.JobID.Valid && m.JobState != nil {
+				if job, err := m.JobState(ctx, ep.JobID.Int64); err == nil {
+					iv.JobError = job.Error
+					iv.JobStatus = job.Status
+				}
+			}
+			item.Episodes = append(item.Episodes, iv)
+		}
+		if len(item.Episodes) == 0 && item.LastError == "" {
+			continue
+		}
+		out = append(out, item)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return strings.ToLower(out[i].DisplayName) < strings.ToLower(out[j].DisplayName)
+	})
 	return out, nil
 }
 
@@ -753,14 +832,14 @@ func (m *Manager) processWatchWithOptions(ctx context.Context, id int64, recover
 			return ErrWatchPaused
 		}
 		m.addEvent(ctx, id, 0, "info", "manual check requested", "")
-		if w.FallbackPolicy != FallbackManual {
-			reset, err := m.Store.ResetExhaustedEpisodes(ctx, id)
-			if err != nil {
-				return err
-			}
-			if reset > 0 {
-				m.addEvent(ctx, id, 0, "info", "exhausted release searches reset by manual check", mustJSON(map[string]any{"episodes": reset}))
-			}
+		// Manual watches keep their candidate snapshots for review; only
+		// episodes with nothing to choose from are searched again.
+		reset, err := m.resetForManualCheck(ctx, w)
+		if err != nil {
+			return err
+		}
+		if reset > 0 {
+			m.addEvent(ctx, id, 0, "info", "exhausted release searches reset by manual check", mustJSON(map[string]any{"episodes": reset}))
 		}
 	}
 	err := m.processWatchUnlocked(ctx, id)
@@ -771,6 +850,31 @@ func (m *Manager) processWatchWithOptions(ctx context.Context, id int64, recover
 		log.Printf("series watch %d: prune events: %v", id, err)
 	}
 	return err
+}
+
+// resetForManualCheck searches again every exhausted episode of an automatic
+// watch, and of a manual watch only those episodeIssue classes as not_found,
+// so the action always matches the issue list.
+func (m *Manager) resetForManualCheck(ctx context.Context, w *Watch) (int64, error) {
+	if w.FallbackPolicy != FallbackManual {
+		return m.Store.ResetExhaustedEpisodes(ctx, w.ID)
+	}
+	eps, err := m.Store.ListEpisodes(ctx, w.ID)
+	if err != nil {
+		return 0, err
+	}
+	var total int64
+	for _, ep := range eps {
+		if kind, _ := episodeIssue(ep); kind != issueNotFound {
+			continue
+		}
+		n, err := m.Store.ResetExhaustedEpisode(ctx, w.ID, ep.ID)
+		if err != nil {
+			return 0, err
+		}
+		total += n
+	}
+	return total, nil
 }
 
 // startWatchRun allows different watches to use external providers in
@@ -1401,6 +1505,14 @@ func (m *Manager) view(ctx context.Context, w *Watch) (*WatchView, error) {
 		if eps[i].State == StateNeedsAttention {
 			v.AttentionCount++
 		}
+		switch kind, _ := episodeIssue(eps[i]); kind {
+		case issueChooseRelease:
+			v.Issues.ChooseRelease++
+		case issueNotFound:
+			v.Issues.NotFound++
+		case issueDownloadFailed:
+			v.Issues.DownloadFailed++
+		}
 		air, ok := parseNullTime(eps[i].AirTimestamp)
 		if !ok {
 			continue
@@ -1485,10 +1597,11 @@ func (m *Manager) syncJobState(ctx context.Context, ep *Episode) {
 // the queue to StateSkipped instead of searching again: the jobs source_key
 // unique index keeps the soft-deleted row, so re-queueing the episode would
 // re-attach the deleted job. A user requeue of that job is still mirrored back
-// by the daily check. Final episodes (skipped included) are left alone, since
-// clearing completed jobs must not rewrite finished downloads.
+// by the daily check. Completed and skipped episodes are left alone, since
+// clearing completed jobs must not rewrite finished downloads. Failed
+// episodes are not finished downloads, so they are skipped like active ones.
 func (m *Manager) skipRemovedJob(ctx context.Context, ep *Episode) {
-	if slices.Contains(finalEpisodeStates, ep.State) {
+	if ep.State == StateCompleted || ep.State == StateSkipped {
 		return
 	}
 	if err := m.Store.SetEpisodeState(ctx, ep.ID, StateSkipped); err != nil {
@@ -1724,6 +1837,22 @@ func candidateViews(in []ScoredCandidate) []CandidateView {
 		out = append(out, candidateView(c))
 	}
 	return out
+}
+
+// episodeIssue derives the issue kind, or issueNone for a healthy episode. An
+// unparsable snapshot counts as not_found so one bad row cannot fail a list.
+func episodeIssue(ep Episode) (kind issueKind, candidates int) {
+	switch ep.State {
+	case StateFailed, queue.StatusDecryptFail:
+		return issueDownloadFailed, 0
+	case StateNeedsAttention:
+		views, err := attentionCandidates(ep.AttentionCandidatesJSON)
+		if err != nil || len(views) == 0 {
+			return issueNotFound, 0
+		}
+		return issueChooseRelease, len(views)
+	}
+	return issueNone, 0
 }
 
 func attentionCandidates(snapshot sql.NullString) ([]CandidateView, error) {
