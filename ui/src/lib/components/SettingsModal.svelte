@@ -1,4 +1,6 @@
 <script>
+  import { notificationsEnabled, notificationsUnavailableReason, setNotificationsEnabled } from '$lib/notifications';
+
   export let show = false;
   export let settingsConcurrency = 2;
   export let settingsMaxAttempts = 5;
@@ -24,6 +26,13 @@
   const TAB_NOTIFICATIONS = 'notifications';
 
   let tab = TAB_GENERAL;
+
+  const notifyUnavailable = notificationsUnavailableReason();
+  let notifyOn = notificationsEnabled();
+
+  async function onNotifyChange() {
+    notifyOn = await setNotificationsEnabled(notifyOn);
+  }
 
   function onBackdropKeydown(event) {
     if (event.key === 'Enter' || event.key === ' ' || event.key === 'Escape') {
@@ -97,6 +106,13 @@
           </label>
         </div>
       {:else}
+        <div>
+          <label class="small" for="settings-notify">
+            <input id="settings-notify" type="checkbox" bind:checked={notifyOn} disabled={!!notifyUnavailable} on:change={onNotifyChange} />
+            browser notifications when jobs finish or fail
+          </label>
+          <p class="notice">{notifyUnavailable || 'This browser only; works while this tab is open.'}</p>
+        </div>
         <div>
           <label class="small" for="settings-telegram-enabled">
             <input id="settings-telegram-enabled" type="checkbox" bind:checked={settingsTelegramEnabled} />

@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { addJobsBatch, clearJobs, getEvents, getMeta, getSettings, listJobs, listSeries, postAction, postGroupAction, summarizeSeriesIssues, testTelegramSettings, updateSettings } from '$lib/api';
+  import { notifyFinishedJobs } from '$lib/notifications';
   import { displayStatus } from '$lib/status';
   import { humanBytes, humanDuration, localTimeZone } from '$lib/format';
   import { countsFor, detectSite, parseUrls, sortJobs } from '$lib/job-utils';
@@ -120,6 +121,7 @@
     try {
       const include = includeDeleted || statusFilter === 'deleted';
       jobs = await listJobs(statusFilter || undefined, include);
+      notifyFinishedJobs(jobs);
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
     }
