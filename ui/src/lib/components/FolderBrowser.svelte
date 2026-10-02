@@ -1,11 +1,13 @@
 <script>
   import { browse, mkdir } from '$lib/api';
   import BrowserModal from '$lib/components/BrowserModal.svelte';
+  import { errMsg } from '$lib/errors';
 
   export let show = false;
   export let favoritePaths = [];
   export let onSelect = () => {};
   export let onAddFavorite = () => {};
+  export let onRemoveFavorite = () => {};
 
   let browserPath = '';
   let browserDirs = [];
@@ -27,7 +29,7 @@
       browserIsRoot = result.is_root;
       browserNewFolderName = '';
     } catch (err) {
-      browserError = err instanceof Error ? err.message : String(err);
+      browserError = errMsg(err);
     } finally {
       browserLoading = false;
     }
@@ -40,9 +42,9 @@
     browserError = '';
     try {
       await mkdir(path);
-      selectPath(path);
+      await loadBrowser(path);
     } catch (err) {
-      browserError = err instanceof Error ? err.message : String(err);
+      browserError = errMsg(err);
     }
   }
 
@@ -73,4 +75,5 @@
   onCreateFolder={createFolder}
   onSelectPath={selectPath}
   {onAddFavorite}
+  {onRemoveFavorite}
 />

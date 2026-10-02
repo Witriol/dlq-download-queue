@@ -1,5 +1,6 @@
 <script>
   import { tick } from 'svelte';
+  import Modal from '$lib/components/Modal.svelte';
 
   export let show = false;
   export let watches = [];
@@ -81,27 +82,10 @@
   function jobIds(episodes) {
     return episodes.map((ep) => ep.job_id).filter((id) => id != null && id !== 0);
   }
-
-  function focusDialog(node) {
-    const opener = document.activeElement;
-    node.focus();
-    return {
-      destroy() {
-        if (opener instanceof HTMLElement && document.contains(opener)) {
-          opener.focus();
-        }
-      }
-    };
-  }
 </script>
 
-<svelte:window on:keydown={(e) => { if (show && e.key === 'Escape') { onClose(); } }} />
-
-{#if show}
-  <div class="modal-backdrop" role="button" tabindex="0" aria-label="Close issues" on:click={onClose} on:keydown={(e) => (e.key === 'Enter' || e.key === ' ') && onClose()}></div>
-  <div class="modal panel series-issues-dialog" role="dialog" aria-modal="true" aria-labelledby="series-issues-title" tabindex="-1" use:focusDialog>
-    <div class="modal-header"><div><p class="eyebrow">Automations</p><h2 id="series-issues-title">Series issues</h2></div><button class="btn icon-btn close-btn" type="button" aria-label="Close issues" on:click={onClose}>×</button></div>
-    {#if error}<div class="series-alert error" role="alert">{error}</div>{/if}
+<Modal {show} eyebrow="Automations" title="Series issues" className="series-issues-dialog" {onClose}>
+    {#if error}<div class="alert error" role="alert">{error}</div>{/if}
     {#if loading && sections.length === 0}
       <div class="profile-empty" aria-live="polite">Loading issues…</div>
     {:else if sections.length === 0}
@@ -143,7 +127,7 @@
                 {#if row.kind === 'choose_release'}
                   <button class="btn tiny primary" type="button" disabled={!watch.enabled || busy !== ''} on:click={() => onChooseRelease(watch)}>Choose release</button>
                 {:else if row.kind === 'not_found' || row.kind === 'check_failed'}
-                  <button class="btn tiny primary" type="button" disabled={!watch.enabled || busy !== ''} on:click={() => onSearchAgain(watch, row.key)}>{rowBusy ? 'Searching…' : (row.kind === 'check_failed' ? 'Retry' : 'Search again')}</button>
+                  <button class="btn tiny primary" type="button" disabled={!watch.enabled || busy !== ''} on:click={() => onSearchAgain(watch, row.key)}>{rowBusy ? 'Searching…' : 'Check now'}</button>
                 {:else if row.kind === 'download_failed' && ids.length === 0 && retryStarted(row.episodes)}
                   <small class="muted">Retry started; status updates within a minute.</small>
                 {:else if row.kind === 'download_failed'}
@@ -155,6 +139,5 @@
         {/each}
       </div>
     {/if}
-    <div class="modal-actions"><button class="btn ghost" type="button" on:click={onClose} disabled={busy !== ''}>Close</button></div>
-  </div>
-{/if}
+    <div slot="footer" class="modal-actions"><button class="btn ghost" type="button" on:click={onClose} disabled={busy !== ''}>Close</button></div>
+</Modal>

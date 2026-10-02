@@ -4,6 +4,7 @@
   import { displayStatus, displayStatusFilter, isWebshareJob } from '$lib/status';
 
   export let jobs = [];
+  export let loaded = true;
   export let sortedJobs = [];
   export let statusOptions = [];
   export let statusFilter = '';
@@ -22,6 +23,7 @@
   export let onOpenLogs = () => {};
   export let onJobAction = () => {};
   export let onGroupAction = () => {};
+  export let requestConfirm = async () => true;
 
   let showFilters = false;
   let isMobile = false;
@@ -41,6 +43,40 @@
   const readyStatuses = new Set(['decrypting', 'decrypt_failed', 'completed']);
 
   $: groupedRows = buildGroupedRows(sortedJobs);
+
+  function ariaSort(key, activeKey, dir) {
+    if (key !== activeKey) {
+      return 'none';
+    }
+
+    return dir === 'asc' ? 'ascending' : 'descending';
+  }
+
+  async function removeGroup(groupId, label) {
+    const confirmed = await requestConfirm({
+      title: 'Remove group',
+      message: `All parts of "${label}" are removed.`,
+      confirmLabel: 'Remove'
+    });
+    if (!confirmed) {
+      return;
+    }
+
+    onGroupAction(groupId, 'remove');
+  }
+
+  async function removeJob(job) {
+    const confirmed = await requestConfirm({
+      title: 'Remove job',
+      message: `Remove job #${job.id}?`,
+      confirmLabel: 'Remove'
+    });
+    if (!confirmed) {
+      return;
+    }
+
+    onJobAction(job.id, 'remove');
+  }
 
   function buildGroupedRows(list) {
     const membersByGroup = new Map();
@@ -207,10 +243,10 @@
       <div class="filter-panel">
         <div class="toolbar-group">
           <label class="small">
-            <input type="checkbox" bind:checked={includeDeleted} on:change={onRefresh} /> include deleted
+            <input type="checkbox" bind:checked={includeDeleted} on:change={onRefresh} /> Include deleted
           </label>
           <label class="small">
-            <input type="checkbox" bind:checked={autoRefresh} /> auto refresh
+            <input type="checkbox" bind:checked={autoRefresh} /> Auto refresh
           </label>
           <label class="small">
             every
@@ -219,7 +255,7 @@
           </label>
         </div>
         <div class="toolbar-group toolbar-sort">
-          <label class="small" for="jobs-sort-key">sort</label>
+          <label class="small" for="jobs-sort-key">Sort</label>
           <select
             id="jobs-sort-key"
             value={sortKey}
@@ -238,8 +274,10 @@
     {/if}
   </div>
 
-  {#if jobs.length === 0}
-    <p class="notice">No jobs yet. Add URLs to start the queue.</p>
+  {#if !loaded}
+    <p class="notice">Loading jobs…</p>
+  {:else if jobs.length === 0}
+    <p class="notice">{statusFilter !== '' ? 'No jobs match this filter.' : 'No jobs yet. Add URLs to start the queue.'}</p>
   {:else}
     <div class="table-wrap">
       <table class="table">
@@ -256,14 +294,14 @@
         </colgroup>
         <thead>
           <tr>
-            <th><button class="sort" on:click={() => onToggleSort('id')}>ID{sortIndicator('id')}</button></th>
-            <th><button class="sort" on:click={() => onToggleSort('status')}>Status{sortIndicator('status')}</button></th>
-            <th><button class="sort" on:click={() => onToggleSort('name')}>Name{sortIndicator('name')}</button></th>
-            <th><button class="sort" on:click={() => onToggleSort('progress')}>Progress{sortIndicator('progress')}</button></th>
-            <th><button class="sort" on:click={() => onToggleSort('speed')}>Speed{sortIndicator('speed')}</button></th>
-            <th><button class="sort" on:click={() => onToggleSort('eta')}>ETA{sortIndicator('eta')}</button></th>
-            <th><button class="sort" on:click={() => onToggleSort('path')}>Path{sortIndicator('path')}</button></th>
-            <th><button class="sort" on:click={() => onToggleSort('url')}>URL{sortIndicator('url')}</button></th>
+            <th aria-sort={ariaSort('id', sortKey, sortDir)}><button class="sort" on:click={() => onToggleSort('id')}>ID{sortIndicator('id')}</button></th>
+            <th aria-sort={ariaSort('status', sortKey, sortDir)}><button class="sort" on:click={() => onToggleSort('status')}>Status{sortIndicator('status')}</button></th>
+            <th aria-sort={ariaSort('name', sortKey, sortDir)}><button class="sort" on:click={() => onToggleSort('name')}>Name{sortIndicator('name')}</button></th>
+            <th aria-sort={ariaSort('progress', sortKey, sortDir)}><button class="sort" on:click={() => onToggleSort('progress')}>Progress{sortIndicator('progress')}</button></th>
+            <th aria-sort={ariaSort('speed', sortKey, sortDir)}><button class="sort" on:click={() => onToggleSort('speed')}>Speed{sortIndicator('speed')}</button></th>
+            <th aria-sort={ariaSort('eta', sortKey, sortDir)}><button class="sort" on:click={() => onToggleSort('eta')}>ETA{sortIndicator('eta')}</button></th>
+            <th aria-sort={ariaSort('path', sortKey, sortDir)}><button class="sort" on:click={() => onToggleSort('path')}>Path{sortIndicator('path')}</button></th>
+            <th aria-sort={ariaSort('url', sortKey, sortDir)}><button class="sort" on:click={() => onToggleSort('url')}>URL{sortIndicator('url')}</button></th>
             <th class="actions-col">Actions</th>
           </tr>
         </thead>
@@ -299,7 +337,7 @@
                         type="button"
                         title="Remove group"
                         aria-label={`Remove group ${row.summary.label}`}
-                        on:click={() => onGroupAction(row.groupId, 'remove')}
+                        on:click={() => removeGroup(row.groupId, row.summary.label)}
                       >
                         <svg viewBox="0 0 24 24" aria-hidden="true">
                           <path d="M7 7h10l-1 13H8zm2-3h6l1 2h4v2H4V6h4z" />
@@ -337,10 +375,10 @@
                   {/if}
                 </td>
                 <td class="cell-speed" data-label="Speed">
-                  <span class="metric-badge metric-speed" class:metric-empty={speed === '-'}>{speed}</span>
+                  <span class="metric-badge metric-speed" class:metric-empty={speed === '—'}>{speed}</span>
                 </td>
                 <td class="cell-eta" data-label="ETA">
-                  <span class="metric-badge metric-eta" class:metric-empty={eta === '-'}>{eta}</span>
+                  <span class="metric-badge metric-eta" class:metric-empty={eta === '—'}>{eta}</span>
                 </td>
                 <td class="cell-path" data-label="Path">{folderPath(job)}</td>
                 <td class="cell-url" data-label="URL">
@@ -433,7 +471,7 @@
                         type="button"
                         title="Remove"
                         aria-label={`Remove job ${job.id}`}
-                        on:click={() => onJobAction(job.id, 'remove')}
+                        on:click={() => removeJob(job)}
                       >
                         <svg viewBox="0 0 24 24" aria-hidden="true">
                           <path d="M7 7h10l-1 13H8zm2-3h6l1 2h4v2H4V6h4z" />
@@ -446,7 +484,7 @@
               {#if job.error_code && !inGroup}
                 <tr class="row-error" data-status={job.status}>
                   <td colspan="9" class="cell-row-error">
-                    <span class="error-inline">error: {job.error_code}{retryIn(job.next_retry_at) || (job.error ? ` · ${job.error}` : '')}</span>
+                    <span class="error-inline">error: {job.error_code}{retryIn(job.next_retry_at)}{job.error ? ` · ${job.error}` : ''}</span>
                   </td>
                 </tr>
               {/if}

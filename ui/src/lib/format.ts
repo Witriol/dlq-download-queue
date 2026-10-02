@@ -17,7 +17,7 @@ export function humanBytes(n: number): string {
 
 export function humanDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) {
-    return '-';
+    return '—';
   }
   const s = Math.floor(seconds);
   const h = Math.floor(s / 3600);
@@ -32,18 +32,10 @@ export function humanDuration(seconds: number): string {
   return `${sec}s`;
 }
 
-export function filePath(job: JobView): string {
-  const name = job.filename || job.name || shortURL(job.url);
-  if (!name) {
-    return shortURL(job.url);
-  }
-  return `${job.out_dir.replace(/\/$/, '')}/${name}`;
-}
-
 export function fileName(job: JobView): string {
   const name = job.filename || job.name || shortURL(job.url);
   if (!name) {
-    return '-';
+    return '—';
   }
   return name;
 }
@@ -77,14 +69,14 @@ export function formatProgress(job: JobView): string {
 
 export function formatSpeed(job: JobView): string {
   if (job.status !== 'downloading' || !job.download_speed || job.download_speed <= 0) {
-    return '-';
+    return '—';
   }
   return `${humanBytes(job.download_speed)}/s`;
 }
 
 export function formatETA(job: JobView): string {
   if (job.status !== 'downloading' || !job.eta_seconds || job.eta_seconds <= 0) {
-    return '-';
+    return '—';
   }
   return humanDuration(job.eta_seconds);
 }
@@ -170,5 +162,5 @@ export function relativeTime(value: string | undefined | null): string {
 export function shortURL(url: string): string {
   if (!url) return '';
   if (url.length <= 64) return url;
-  return `${url.slice(0, 61)}...`;
+  return `${url.slice(0, 61)}…`;
 }

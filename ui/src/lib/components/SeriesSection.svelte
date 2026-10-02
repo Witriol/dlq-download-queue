@@ -1,5 +1,6 @@
 <script>
   import { onMount, tick } from 'svelte';
+  import { errMsg } from '$lib/errors';
   import { formatAirTime, formatDateTime, formatDateTimeShort, localTimeZone, relativeTime } from '$lib/format';
   import { createSeries, getSeriesEvents, getSeriesIssues, getSeriesRefresh, listSeries, listSeriesAttention, postAction, previewSeries, refreshSeries, searchTVMaze, selectSeriesCandidate, seriesAction, summarizeSeriesIssues, updateSeries } from '$lib/api';
   import FolderBrowser from '$lib/components/FolderBrowser.svelte';
@@ -15,7 +16,8 @@
   export let onRemoveFavorite = () => {};
   export let onModalOpenChange = () => {};
   export let onChanged = () => {};
-  export let active = false;
+  export let onWatchesChanged = () => {};
+  export let requestConfirm = async () => true;
 
   const defaultFieldModes = { resolution: 'required', codec: 'preferred', source: 'preferred', release_group: 'preferred', container: 'ignored' };
   const episodeDoneStates = new Set(['completed', 'skipped']);
@@ -32,6 +34,7 @@
   let wizardOpener = null;
   let wizardStep = 0;
   let wizardBusy = false;
+  let wizardBusyAction = '';
   let wizardError = '';
   let wizardNotice = '';
   let profile = {};
@@ -54,7 +57,6 @@
   let previewTotalCandidates = 0;
   let refreshTimer = null;
   let mounted = false;
-  let wasActive = false;
   let attentionWatch = null;
   let attentionEpisodes = [];
   let attentionLoading = false;
@@ -68,13 +70,6 @@
   let issuesFocusId = null;
   let showLogs = false;
   let logsWatch = null;
-  let logsEvents = [];
-  let logsLimit = 50;
-  let logsAutoRefresh = true;
-  let logsInterval = 3;
-  let logsError = '';
-  let logsLoading = false;
-  let logsTimer = null;
 
   let draft = blankDraft();
 
@@ -96,12 +91,6 @@
     };
   }
 
-  function unwrap(value, keys) {
-    if (!value || typeof value !== 'object') return value;
-    for (const key of keys) if (key in value) return value[key];
-    return value;
-  }
-
   function normalizeWatch(raw) {
     const watch = raw || {};
     return {
@@ -121,16 +110,22 @@
     };
   }
 
-  async function refresh() {
-    loading = true;
+  // Background polls keep `loading` untouched so the Refresh button does not flicker.
+  async function refresh(background = false) {
+    if (!background) {
+      loading = true;
+    }
     loadError = '';
     try {
       const response = await listSeries();
       watches = response.map(normalizeWatch);
+      onWatchesChanged(watches);
     } catch (err) {
-      loadError = err instanceof Error ? err.message : String(err);
+      loadError = errMsg(err);
     } finally {
-      loading = false;
+      if (!background) {
+        loading = false;
+      }
     }
     loadRefreshInfo();
   }
@@ -151,7 +146,7 @@
       await refresh();
       onChanged();
     } catch (err) {
-      refreshError = err instanceof Error ? err.message : String(err);
+      refreshError = errMsg(err);
     } finally {
       refreshBusy = false;
     }
@@ -276,6 +271,7 @@
     wizardNotice = '';
     if (!validateWizardStep(0)) return;
     wizardBusy = true;
+    wizardBusyAction = 'analyze';
     try {
       const response = await previewSeries({ reference_url: draft.reference_url.trim() });
       profile = profileObject(response);
@@ -293,9 +289,10 @@
         if (tvmazeResults.length) await chooseShow(tvmazeResults[0]);
       }
     } catch (err) {
-      wizardError = err instanceof Error ? err.message : String(err);
+      wizardError = errMsg(err);
     } finally {
       wizardBusy = false;
+      wizardBusyAction = '';
     }
   }
 
@@ -331,7 +328,7 @@
       tvmazeResults = await searchTVMaze(query);
       wizardNotice = tvmazeResults.length ? '' : 'No TVmaze shows found. Try another title or paste the show URL.';
     } catch (err) {
-      wizardError = err instanceof Error ? err.message : String(err);
+      wizardError = errMsg(err);
     } finally {
       tvmazeBusy = false;
     }
@@ -360,6 +357,7 @@
     if (!selectedShow?.id) return;
     syncProfile();
     wizardBusy = true;
+    wizardBusyAction = 'preview';
     try {
       const response = await previewSeries({ ...draft, start_mode: draft.initial_mode, tvmaze_id: Number(selectedShow.id), quality_profile: draft.quality_profile });
       candidates = Array.isArray(response?.candidates) ? response.candidates : (Array.isArray(response?.matches) ? response.matches : []);
@@ -367,9 +365,10 @@
       nextEpisode = response?.next_episode || null;
       testRan = true;
     } catch (err) {
-      wizardError = err instanceof Error ? err.message : String(err);
+      wizardError = errMsg(err);
     } finally {
       wizardBusy = false;
+      wizardBusyAction = '';
     }
   }
 
@@ -380,6 +379,7 @@
     }
     syncProfile();
     wizardBusy = true;
+    wizardBusyAction = 'activate';
     try {
       await createSeries({ ...draft, start_mode: draft.initial_mode, tvmaze_id: Number(selectedShow.id), display_name: selectedShow.name, quality_profile: draft.quality_profile });
       showWizard = false;
@@ -387,16 +387,26 @@
       await refresh();
       onChanged();
     } catch (err) {
-      wizardError = err instanceof Error ? err.message : String(err);
+      wizardError = errMsg(err);
     } finally {
       wizardBusy = false;
+      wizardBusyAction = '';
     }
   }
 
   async function doAction(watch, action) {
     const id = watch?.id;
     if (id == null) return;
-    if (action === 'remove' && !confirm(`Remove the ${watch.display_name} watcher? Existing download jobs are not removed.`)) return;
+    if (action === 'remove') {
+      const confirmed = await requestConfirm({
+        title: 'Remove series',
+        message: `Remove the ${watch.display_name} watcher? Existing download jobs are not removed.`,
+        confirmLabel: 'Remove'
+      });
+      if (!confirmed) {
+        return;
+      }
+    }
     const fromEdit = action === 'remove' && editing?.id === id;
     if (fromEdit) editError = ''; else actionError = '';
     busyAction = `${id}:${action}`;
@@ -406,7 +416,7 @@
       await refresh();
       onChanged();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errMsg(err);
       if (fromEdit) editError = message; else actionError = message;
     } finally {
       busyAction = '';
@@ -429,7 +439,7 @@
       const response = await listSeriesAttention(attentionWatch.id);
       attentionEpisodes = response.map(normalizeAttentionEpisode);
     } catch (err) {
-      attentionError = err instanceof Error ? err.message : String(err);
+      attentionError = errMsg(err);
       attentionEpisodes = [];
     } finally {
       attentionLoading = false;
@@ -460,7 +470,7 @@
     try {
       issuesWatches = await getSeriesIssues();
     } catch (err) {
-      issuesError = err instanceof Error ? err.message : String(err);
+      issuesError = errMsg(err);
     } finally {
       issuesLoading = false;
     }
@@ -488,7 +498,7 @@
     try {
       await run();
     } catch (err) {
-      issuesError = err instanceof Error ? err.message : String(err);
+      issuesError = errMsg(err);
     }
     // Reload even on failure: a partial retry still changed state.
     try {
@@ -496,7 +506,7 @@
       await refresh();
       onChanged();
     } catch (err) {
-      issuesError ||= err instanceof Error ? err.message : String(err);
+      issuesError ||= errMsg(err);
     } finally {
       issuesBusy = '';
     }
@@ -546,7 +556,7 @@
       await refresh();
       onChanged();
     } catch (err) {
-      attentionError = err instanceof Error ? err.message : String(err);
+      attentionError = errMsg(err);
     } finally {
       attentionBusy = '';
     }
@@ -588,7 +598,7 @@
       await refresh();
       onChanged();
     } catch (err) {
-      editError = err instanceof Error ? err.message : String(err);
+      editError = errMsg(err);
     } finally {
       busyAction = '';
     }
@@ -788,48 +798,21 @@
     return date.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit', hour12: false });
   }
 
-  async function refreshLogs() {
-    if (!logsWatch?.id) return;
-    logsLoading = true;
-    logsError = '';
-    try {
-      logsEvents = await getSeriesEvents(logsWatch.id, Number(logsLimit) || 50);
-    } catch (err) {
-      logsError = err instanceof Error ? err.message : String(err);
-    } finally {
-      logsLoading = false;
-    }
-  }
-
-  function stopLogsTimer() {
-    if (logsTimer) {
-      clearInterval(logsTimer);
-      logsTimer = null;
-    }
-  }
-
-  function startLogsTimer() {
-    stopLogsTimer();
-    if (!showLogs || !logsAutoRefresh) return;
-    const intervalMs = Math.max(1, Number(logsInterval) || 1) * 1000;
-    logsTimer = setInterval(refreshLogs, intervalMs);
-  }
-
   function openLogs(watch) {
     logsWatch = watch;
-    logsEvents = [];
-    logsError = '';
     showLogs = true;
-    refreshLogs();
-    startLogsTimer();
   }
 
   function closeLogs() {
     showLogs = false;
     logsWatch = null;
-    logsEvents = [];
-    logsError = '';
-    stopLogsTimer();
+  }
+
+  function loadLogs(limit) {
+    if (!logsWatch?.id) {
+      return Promise.resolve([]);
+    }
+    return getSeriesEvents(logsWatch.id, limit);
   }
 
   function candidateName(candidate) {
@@ -871,8 +854,10 @@
 
   function startRefreshTimer() {
     stopRefreshTimer();
-    if (!mounted || !active) return;
-    refreshTimer = setInterval(refresh, 15000);
+    if (!mounted) {
+      return;
+    }
+    refreshTimer = setInterval(() => refresh(true), 15000);
   }
 
   $: watcherModalOpen = showWizard || Boolean(editing) || browserOpen || Boolean(attentionWatch) || issuesOpen || showLogs;
@@ -885,29 +870,17 @@
   $: rejectedCount = Math.max(0, previewTotalCandidates - candidates.filter((candidate) => candidate.accepted !== false).length);
   $: logsSubtitle = logsWatch ? `${logsWatch.display_name} · ${localTimeZone()}` : '';
   $: if (mounted) {
-    if (watcherModalOpen || !active) stopRefreshTimer();
+    if (watcherModalOpen) stopRefreshTimer();
     else startRefreshTimer();
   }
-  $: if (mounted && active !== wasActive) {
-    wasActive = active;
-    if (active) refresh();
-  }
   $: onModalOpenChange(watcherModalOpen);
-  $: {
-    logsAutoRefresh;
-    logsInterval;
-    if (showLogs) startLogsTimer();
-  }
 
   onMount(() => {
     mounted = true;
-    wasActive = active;
     refresh();
-    if (active) startRefreshTimer();
     return () => {
       mounted = false;
       stopRefreshTimer();
-      stopLogsTimer();
       onModalOpenChange(false);
     };
   });
@@ -928,16 +901,16 @@
         {#if watches.length > 0 && refreshInfo}<p class="muted" title={formatDateTimeShort(refreshInfo.next_refresh_at)}>TVmaze schedule refreshes daily at {refreshTimeOfDay(refreshInfo.next_refresh_at)} · next {relativeTime(refreshInfo.next_refresh_at)}</p>{/if}
       </div>
       <div class="actions">
-        {#if watches.length > 0}<button class="btn ghost" type="button" title="Series with failed checks, failed downloads or episodes to review" aria-label={issueSummary.action > 0 ? `Issues: ${issueSummary.action} series need action` : (issueSummary.notFound > 0 ? `Issues: ${issueSummary.notFound} series have episodes not found` : (issueSummary.any > 0 ? 'Issues: only on paused series' : 'Issues: none'))} on:click={() => openIssues()} disabled={issueSummary.any === 0}>Issues{#if issueSummary.action > 0} <span class="issues-count">{issueSummary.action}</span>{:else if issueSummary.notFound > 0} <span class="issues-count muted">{issueSummary.notFound}</span>{/if}</button>{/if}
+        {#if watches.length > 0}<button class="btn ghost" type="button" title="Series with failed checks, failed downloads or episodes to review" aria-label={issueSummary.action > 0 ? `Issues: ${issueSummary.action} series need action` : (issueSummary.notFound > 0 ? `Issues: ${issueSummary.notFound} series have episodes not found` : (issueSummary.any > 0 ? 'Issues: only on paused series' : 'Issues: none'))} on:click={() => openIssues()} disabled={issueSummary.any === 0}>Issues{#if issueSummary.action > 0} <span class="count-badge">{issueSummary.action}</span>{:else if issueSummary.notFound > 0} <span class="count-badge muted">{issueSummary.notFound}</span>{/if}</button>{/if}
         {#if watches.length > 0}<button class="btn ghost" type="button" title="Refresh the TVmaze schedule and search due episodes for every series" on:click={refreshNow} disabled={refreshBusy}>{refreshBusy ? 'Checking…' : 'Check all'}</button>{/if}
-        <button class="btn ghost" type="button" on:click={refresh} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</button>
+        <button class="btn ghost" type="button" on:click={() => refresh()} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</button>
         <button class="btn primary" type="button" on:click={openWizard}>Add series</button>
       </div>
     </div>
 
-    {#if loadError}<div class="series-alert error" role="alert">{loadError}</div>{/if}
-    {#if actionError}<div class="series-alert error" role="alert">{actionError}</div>{/if}
-    {#if refreshError}<div class="series-alert error" role="alert">{refreshError}</div>{/if}
+    {#if loadError}<div class="alert error" role="alert">{loadError}</div>{/if}
+    {#if actionError}<div class="alert error" role="alert">{actionError}</div>{/if}
+    {#if refreshError}<div class="alert error" role="alert">{refreshError}</div>{/if}
 
     {#if watches.length === 0 && !loading}
       <div class="series-empty">
@@ -986,7 +959,7 @@
                 </td>
                 <td class="actions-col" data-label="Actions">
                   <div class="actions row-actions automation-actions">
-                    <button class="btn icon-btn action-btn action-retry" type="button" title={busyAction === `${watch.id}:check-now` ? 'Checking…' : 'Check now'} aria-label={`Check ${watch.display_name} now`} on:click={() => doAction(watch, 'check-now')} disabled={!watch.enabled || refreshBusy || busyAction === `${watch.id}:check-now`}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.7 6.3A8 8 0 1 0 20 12h-2a6 6 0 1 1-1.8-4.3L13 11h8V3z" /></svg></button>
+                    <button class="btn icon-btn action-btn" type="button" title={busyAction === `${watch.id}:check-now` ? 'Checking…' : 'Check now'} aria-label={`Check ${watch.display_name} now`} on:click={() => doAction(watch, 'check-now')} disabled={!watch.enabled || refreshBusy || busyAction === `${watch.id}:check-now`}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" stroke="currentColor" stroke-width="2" fill="none" /><path d="m16 16 4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg></button>
                     <button class="btn icon-btn action-btn action-logs" type="button" title="Logs" aria-label={`Open logs for ${watch.display_name}`} on:click={() => openLogs(watch)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h8l4 4v12H7z" stroke="currentColor" stroke-width="2" fill="none" /><path d="M15 4v4h4M10 13h6M10 16h6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" /></svg></button>
                     <button class="btn icon-btn action-btn" class:action-pause={watch.enabled} class:action-resume={!watch.enabled} type="button" title={watch.enabled ? 'Pause' : 'Resume'} aria-label={`${watch.enabled ? 'Pause' : 'Resume'} ${watch.display_name}`} on:click={() => doAction(watch, watch.enabled ? 'pause' : 'resume')} disabled={busyAction === `${watch.id}:${watch.enabled ? 'pause' : 'resume'}`}><svg viewBox="0 0 24 24" aria-hidden="true">{#if watch.enabled}<path d="M7 5h4v14H7zm6 0h4v14h-4z" />{:else}<path d="M8 5v14l11-7z" />{/if}</svg></button>
                     <button class="btn icon-btn action-btn action-edit" type="button" title="Edit" aria-label={`Edit ${watch.display_name}`} on:click={() => startEdit(watch)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 16.5-.5 4 4-.5L19 8.5 15.5 5zM17 3l4 4-1.5 1.5-4-4z" /></svg></button>
@@ -1005,6 +978,7 @@
   show={showWizard}
   bind:wizardStep
   {wizardBusy}
+  {wizardBusyAction}
   {wizardError}
   {wizardNotice}
   bind:draft
@@ -1082,16 +1056,10 @@
 
 <LogsModal
   show={showLogs}
-  title="Series Events"
+  title="Series events"
   subtitle={logsSubtitle}
-  {logsEvents}
-  bind:logsLimit
-  bind:logsAutoRefresh
-  bind:logsInterval
-  {logsError}
-  {logsLoading}
+  load={loadLogs}
   onClose={closeLogs}
-  onRefresh={refreshLogs}
 />
 
 <FolderBrowser
@@ -1099,4 +1067,5 @@
   favoritePaths={outDirFavorites}
   onSelect={selectFolder}
   {onAddFavorite}
+  {onRemoveFavorite}
 />

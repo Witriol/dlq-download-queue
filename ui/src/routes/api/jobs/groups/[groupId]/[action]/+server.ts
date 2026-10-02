@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { forward } from '$lib/server/dlq';
+import { forwardOrError } from '$lib/server/dlq';
 
 const allowed = new Set(['remove', 'retry-decrypt']);
 
@@ -9,13 +9,9 @@ export async function POST(
   if (!allowed.has(params.action)) {
     return json({ error: 'unsupported_action' }, { status: 400 });
   }
-  try {
-    return await forward(fetch, `/jobs/groups/${encodeURIComponent(params.groupId)}/${params.action}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: '{}'
-    });
-  } catch (err) {
-    return json({ error: err instanceof Error ? err.message : 'dlq_unreachable' }, { status: 502 });
-  }
+  return forwardOrError(fetch, `/jobs/groups/${encodeURIComponent(params.groupId)}/${params.action}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}'
+  });
 }

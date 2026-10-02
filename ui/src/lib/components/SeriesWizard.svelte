@@ -1,9 +1,12 @@
 <script>
-  import { tick } from 'svelte';
+  import CandidateRow from '$lib/components/CandidateRow.svelte';
+  import FolderPicker from '$lib/components/FolderPicker.svelte';
+  import Modal from '$lib/components/Modal.svelte';
 
   export let show = false;
   export let wizardStep = 0;
   export let wizardBusy = false;
+  export let wizardBusyAction = '';
   export let wizardError = '';
   export let wizardNotice = '';
   export let draft = {};
@@ -36,37 +39,6 @@
   export let candidateName = (candidate) => candidate?.name || '';
   export let reasons = () => [];
 
-  let dialog;
-  let wasShown = false;
-
-  $: if (show && !wasShown) {
-    wasShown = true;
-    tick().then(() => dialog?.querySelector('[data-wizard-autofocus]')?.focus());
-  } else if (!show) {
-    wasShown = false;
-  }
-
-  function handleDialogKeydown(event) {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      onClose();
-      return;
-    }
-    if (event.key !== 'Tab') return;
-    const controls = [...dialog.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
-      .filter((element) => !element.hidden && element.getClientRects().length);
-    if (!controls.length) return;
-    const first = controls[0];
-    const last = controls[controls.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }
-
   function setReference(value) {
     draft.reference_url = value;
   }
@@ -84,11 +56,6 @@
     draft[key] = value;
   }
 
-  /** "N MB" or a size-unavailable fallback, reused for both the picked and the other candidates. */
-  function candidateSize(candidate) {
-    return candidate.size_bytes ? `${Math.round(candidate.size_bytes / 1048576)} MB` : 'Size unavailable';
-  }
-
   function localDate(value) {
     if (!value) return '';
     const date = new Date(value);
@@ -103,24 +70,15 @@
   }
 </script>
 
-<!-- Changing steps removes the focused button, dropping focus to <body> where the dialog's own Escape handler cannot see it. -->
-<svelte:window on:keydown={(event) => show && event.key === 'Escape' && event.target === document.body && onClose()} />
-
-{#if show}
-  <div class="modal-backdrop" role="button" tabindex="0" aria-label="Close series wizard" on:click={onClose} on:keydown={(e) => e.key === 'Escape' && onClose()}></div>
-  <div bind:this={dialog} class="modal panel modal-wide series-wizard" role="dialog" aria-modal="true" aria-labelledby="series-wizard-title" tabindex="-1" on:keydown={handleDialogKeydown}>
-    <div class="modal-header">
-      <h2 id="series-wizard-title">Add series</h2>
-      <button class="btn icon-btn close-btn" type="button" aria-label="Close" on:click={onClose}>×</button>
-    </div>
+<Modal {show} title="Add series" className="modal-wide series-wizard" {onClose}>
     <div class="series-wizard-scroll">
-      {#if wizardError}<div class="series-alert error" role="alert">{wizardError}</div>{/if}
-      {#if wizardNotice}<div class="series-alert notice" role="status">{wizardNotice}</div>{/if}
+      {#if wizardError}<div class="alert error" role="alert">{wizardError}</div>{/if}
+      {#if wizardNotice}<div class="alert notice" role="status">{wizardNotice}</div>{/if}
 
       {#if wizardStep === 0}
         <div class="series-wizard-body">
           <div class="form-grid series-form-grid">
-            <div class="wizard-field wizard-field-primary"><div class="field-heading"><label for="series-reference">Webshare reference URL</label><span>Required</span></div><input id="series-reference" data-wizard-autofocus type="url" value={draft.reference_url} on:input={(event) => setReference(event.currentTarget.value)} placeholder="https://webshare.cz/#/file/..." autocomplete="off" aria-describedby="series-reference-hint" /><p id="series-reference-hint" class="field-hint">Paste a file link for an episode whose quality you want to repeat.</p></div>
+            <div class="wizard-field wizard-field-primary"><div class="field-heading"><label for="series-reference">Webshare reference URL</label><span>Required</span></div><input id="series-reference" type="url" value={draft.reference_url} on:input={(event) => setReference(event.currentTarget.value)} placeholder="https://webshare.cz/#/file/…" autocomplete="off" aria-describedby="series-reference-hint" /><p id="series-reference-hint" class="field-hint">Paste a file link for an episode whose quality you want to repeat.</p></div>
           </div>
         </div>
       {:else}
@@ -142,16 +100,18 @@
             {/if}
           </section>
 
-          <section class="wizard-section" aria-labelledby="folder-heading">
+          <section class="wizard-section" aria-label="Download folder">
             <div class="wizard-section-body">
-              <label class="field-label" id="folder-heading" for="series-out-dir">Folder</label>
-              <div class="series-folder-input"><input id="series-out-dir" value={draft.out_dir} on:input={(event) => setOutputDirectory(event.currentTarget.value)} placeholder="Choose the final folder for this series" /><button class="btn ghost" type="button" on:click={onOpenBrowser}>Browse</button></div>
-              {#if outDirFavorites.length || outDirPresets.length}
-                <div class="presets-list">
-                  {#each outDirFavorites as favorite}<div class:active={draft.out_dir === favorite} class="favorite-folder-chip"><button class="favorite-folder-btn" type="button" title={favorite} on:click={() => setOutputDirectory(favorite)}><span>{favorite}</span></button><button class="favorite-remove-btn" type="button" aria-label={`Remove favorite ${favorite}`} on:click={() => onRemoveFavorite(favorite)}>×</button></div>{/each}
-                  {#each outDirPresets as preset}<button class="preset-btn" type="button" on:click={() => setOutputDirectory(preset)}>{preset}</button>{/each}
-                </div>
-              {/if}
+              <FolderPicker
+                inputId="series-out-dir"
+                value={draft.out_dir}
+                presets={outDirPresets}
+                favorites={outDirFavorites}
+                placeholder="Choose the final folder for this series"
+                onBrowse={onOpenBrowser}
+                {onRemoveFavorite}
+                onInput={setOutputDirectory}
+              />
               <label class="series-checkbox"><input type="checkbox" bind:checked={draft.organize_by_season} /> Season folders → <code>{outputExample(draft.out_dir, draft.series_folder, draft.organize_by_season, nextEpisode?.season || draft.initial_season)}</code></label>
             </div>
           </section>
@@ -166,14 +126,14 @@
           <section class="wizard-section" aria-labelledby="test-result-heading">
             <div class="wizard-section-heading">
               <div><h4 id="test-result-heading">Test result</h4><p>What the watcher would pick for the reference episode right now.</p></div>
-              <button class="btn ghost tiny nowrap" type="button" on:click={onRetest} disabled={wizardBusy || !selectedShow}>{wizardBusy ? 'Testing…' : 'Re-test'}</button>
+              <button class="btn ghost tiny nowrap" type="button" on:click={onRetest} disabled={wizardBusy || !selectedShow}>{wizardBusyAction === 'preview' ? 'Testing…' : 'Re-test'}</button>
             </div>
             <div class="test-result-body">
               {#if !testRan}
                 <div class="profile-empty">Run a test to see the release the watcher would pick.</div>
               {:else if pickedCandidate}
-                <div class="candidate-row"><div><strong>{candidateName(pickedCandidate)}</strong><small>{candidateSize(pickedCandidate)}</small></div><span class:accepted={pickedCandidate.accepted !== false} class="candidate-decision">{pickedCandidate.exact === false ? 'Alternative' : 'Exact'}</span></div>
-                {#if otherCandidates.length}<details class="other-matches"><summary>{otherCandidates.length} other match{otherCandidates.length === 1 ? '' : 'es'}</summary><div class="candidate-list">{#each otherCandidates as candidate}<div class="candidate-row"><div><strong>{candidateName(candidate)}</strong><small>{candidateSize(candidate)}{#if candidate.score != null} · score {candidate.score}{/if}</small></div><span class:accepted={candidate.accepted !== false} class="candidate-decision">{candidate.exact === false ? 'Alternative' : 'Exact'}</span><div class="candidate-reasons">{#each reasons(candidate) as reason}<span class:negative={reason.trim().startsWith('-')}>{reason}</span>{/each}</div></div>{/each}</div></details>{/if}
+                <CandidateRow candidate={pickedCandidate} name={candidateName(pickedCandidate)} />
+                {#if otherCandidates.length}<details class="other-matches"><summary>{otherCandidates.length} other match{otherCandidates.length === 1 ? '' : 'es'}</summary><div class="candidate-list">{#each otherCandidates as candidate}<CandidateRow {candidate} name={candidateName(candidate)} reasons={reasons(candidate)} showScore showReasons />{/each}</div></details>{/if}
                 {#if rejectedCount}<p class="field-hint">{rejectedCount} rejected</p>{/if}
               {:else}
                 <div class="profile-empty">No accepted release for the reference episode yet. This is safe to activate; the scheduler keeps searching.</div>
@@ -208,6 +168,15 @@
       {/if}
     </div>
 
-    <div class="modal-actions series-wizard-actions"><div class="actions"><button class="btn ghost" type="button" on:click={onClose}>Cancel</button>{#if wizardStep > 0}<button class="btn ghost wizard-back" type="button" on:click={onBack} disabled={wizardBusy}><span aria-hidden="true">←</span> Back</button>{/if}</div>{#if wizardStep === 0}<button class="btn primary" type="button" on:click={onNext} disabled={wizardBusy}>{wizardBusy ? 'Analyzing…' : 'Analyze'}</button>{:else}<button class="btn primary" type="button" on:click={onActivate} disabled={wizardBusy}>{wizardBusy ? 'Activating…' : 'Activate watcher'}</button>{/if}</div>
-  </div>
-{/if}
+    <div slot="footer" class="modal-actions series-wizard-actions">
+      <div class="actions">
+        <button class="btn ghost" type="button" on:click={onClose}>Cancel</button>
+        {#if wizardStep > 0}<button class="btn ghost wizard-back" type="button" on:click={onBack} disabled={wizardBusy}><span aria-hidden="true">←</span> Back</button>{/if}
+      </div>
+      {#if wizardStep === 0}
+        <button class="btn primary" type="button" on:click={onNext} disabled={wizardBusy}>{wizardBusyAction === 'analyze' ? 'Analyzing…' : 'Analyze'}</button>
+      {:else}
+        <button class="btn primary" type="button" on:click={onActivate} disabled={wizardBusy}>{wizardBusyAction === 'activate' ? 'Activating…' : 'Activate watcher'}</button>
+      {/if}
+    </div>
+</Modal>

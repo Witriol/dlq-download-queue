@@ -10,7 +10,3 @@ export async function PATCH({ params, request, fetch }: Params & { request: Requ
     body
   });
 }
-
-export async function DELETE({ params, fetch }: Params & { fetch: typeof globalThis.fetch }) {
-  return forwardOrError(fetch, `/series/${encodeURIComponent(params.id)}`, { method: 'DELETE' });
-}

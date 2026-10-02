@@ -16,11 +16,11 @@ export function displayStatus(job: StatusSiteURL): string {
   if (job.status === 'paused' && isWebshareJob(job)) {
     return 'stopped';
   }
-  return job.status;
+  return job.status.replace(/_/g, ' ');
 }
 
 export function displayStatusFilter(status: string): string {
   if (!status) return 'all statuses';
   if (status === 'paused') return 'paused/stopped';
-  return status;
+  return status.replace(/_/g, ' ');
 }

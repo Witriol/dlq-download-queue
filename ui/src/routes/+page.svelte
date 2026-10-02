@@ -3,12 +3,13 @@
   import { addJobsBatch, clearJobs, getEvents, getMeta, getSettings, listJobs, listSeries, postAction, postGroupAction, summarizeSeriesIssues, testTelegramSettings, updateSettings } from '$lib/api';
   import { notifyFinishedJobs } from '$lib/notifications';
   import { displayStatus } from '$lib/status';
+  import { errMsg } from '$lib/errors';
   import { humanBytes, humanDuration, localTimeZone } from '$lib/format';
   import { countsFor, detectSite, parseUrls, sortJobs } from '$lib/job-utils';
   import JobsTable from '$lib/components/JobsTable.svelte';
   import AddJobsModal from '$lib/components/AddJobsModal.svelte';
   import LogsModal from '$lib/components/LogsModal.svelte';
-  import ClearConfirmModal from '$lib/components/ClearConfirmModal.svelte';
+  import ConfirmModal from '$lib/components/ConfirmModal.svelte';
   import SettingsModal from '$lib/components/SettingsModal.svelte';
   import FolderBrowser from '$lib/components/FolderBrowser.svelte';
   import SeriesSection from '$lib/components/SeriesSection.svelte';
@@ -17,8 +18,14 @@
   const outDirFavoritesStorageKey = 'dlq.outDirFavorites';
   const seriesAttentionPollMs = 60_000;
 
+  const DEFAULT_OUT_DIR_PLACEHOLDER = 'Select a preset or type a path';
+
   let jobs = [];
-  let lastError = '';
+  let jobsLoaded = false;
+  let pollError = '';
+  let actionError = '';
+  let refreshInFlight = 0;
+  let refreshSeq = 0;
 
   let statusFilter = '';
   let includeDeleted = false;
@@ -28,7 +35,13 @@
   let showAdd = false;
   let sortKey = 'id';
   let sortDir = 'desc';
-  let showClearConfirm = false;
+  let confirmOpen = false;
+  let confirmOptions = { title: '', message: '', confirmLabel: 'Confirm' };
+  // Set for confirms that run their own async work (clear); otherwise confirm resolves the request.
+  let confirmRun = null;
+  let confirmResolve = null;
+  let confirmBusy = false;
+  let confirmError = '';
   let activeTab = 'queue';
   let watcherModalOpen = false;
 
@@ -39,21 +52,14 @@
   let addErrors = [];
   let adding = false;
   let addError = '';
+  let addProgress = null;
   let outDirPresets = [];
   let outDirFavorites = [];
   let metaError = '';
   let metaVersion = '';
-  let outDirPlaceholder = 'Select a preset or type a path';
 
   let showLogs = false;
   let logsJob = null;
-  let logsEvents = [];
-  let logsLimit = 50;
-  let logsAutoRefresh = true;
-  let logsInterval = 3;
-  let logsError = '';
-  let logsLoading = false;
-  let logsTimer = null;
 
   let showSettings = false;
   let settingsConcurrency = 2;
@@ -61,6 +67,9 @@
   let settingsAutoDecrypt = true;
   let settingsError = '';
   let settingsSaving = false;
+  let settingsLoading = false;
+  let settingsLoadError = '';
+  let settingsLoaded = false;
 
   let settingsTelegramEnabled = false;
   let settingsTelegramBotToken = '';
@@ -75,6 +84,7 @@
   let settingsTelegramFailureTemplate = DEFAULT_FAILURE_TEMPLATE;
   let settingsTelegramTesting = false;
   let settingsTelegramTestResult = '';
+  let settingsTelegramTestError = '';
 
   let showBrowser = false;
   let bodyLockState = null;
@@ -89,7 +99,7 @@
     if (job.status !== 'downloading') return sum;
     return sum + (job.download_speed ?? 0);
   }, 0);
-  $: totalSpeedLabel = totalSpeed > 0 ? `${humanBytes(totalSpeed)}/s` : '-';
+  $: totalSpeedLabel = totalSpeed > 0 ? `${humanBytes(totalSpeed)}/s` : '—';
   $: inProgressJobs = jobs.filter((job) => (
     job.status === 'queued' ||
     job.status === 'resolving' ||
@@ -110,24 +120,51 @@
   $: overallEtaSeconds = totalSpeed > 0 && inProgressBytesRemaining > 0
     ? Math.ceil(inProgressBytesRemaining / totalSpeed)
     : 0;
-  $: overallEtaLabel = overallEtaSeconds > 0 ? humanDuration(overallEtaSeconds) : '-';
+  $: overallEtaLabel = overallEtaSeconds > 0 ? humanDuration(overallEtaSeconds) : '—';
   $: overallEtaHint = inProgressJobs.length > 0 && inProgressKnownSizeCount < inProgressJobs.length
     ? `${inProgressKnownSizeCount}/${inProgressJobs.length} sized`
     : '';
   $: seriesIssueSummary = summarizeSeriesIssues(seriesWatches);
 
-  async function refresh() {
-    lastError = '';
+  // Timer ticks skip while a request is in flight; explicit refreshes always run.
+  // Only the newest request may apply its response.
+  async function refresh({ fromTimer = false } = {}) {
+    if (fromTimer && refreshInFlight > 0) {
+      return;
+    }
+
+    refreshSeq += 1;
+    const seq = refreshSeq;
+    refreshInFlight += 1;
     try {
       const include = includeDeleted || statusFilter === 'deleted';
-      jobs = await listJobs(statusFilter || undefined, include);
+      const next = await listJobs(statusFilter || undefined, include);
+      if (seq !== refreshSeq) {
+        return;
+      }
+
+      jobs = next;
+      pollError = '';
+      jobsLoaded = true;
       notifyFinishedJobs(jobs);
     } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
+      if (seq !== refreshSeq) {
+        return;
+      }
+
+      pollError = errMsg(err);
+      jobsLoaded = true;
+    } finally {
+      refreshInFlight -= 1;
     }
   }
 
   async function refreshSeriesAttention() {
+    // The automations tab keeps seriesWatches current through onWatchesChanged.
+    if (activeTab === 'automations') {
+      return;
+    }
+
     try {
       seriesWatches = await listSeries();
     } catch {
@@ -158,7 +195,7 @@
     stopTimer();
     if (!autoRefresh || activeTab !== 'queue') return;
     const intervalMs = Math.max(1, Number(refreshInterval) || 1) * 1000;
-    timer = setInterval(refresh, intervalMs);
+    timer = setInterval(() => refresh({ fromTimer: true }), intervalMs);
   }
 
   function toggleSort(key) {
@@ -191,7 +228,7 @@
     const urls = parseUrls(addUrlsText);
     const outDir = (addOutDir ?? '').trim();
     if (!outDir) {
-      addError = 'Out directory is required.';
+      addError = 'Download folder is required.';
       return;
     }
     if (urls.length === 0) {
@@ -199,49 +236,115 @@
       return;
     }
     adding = true;
-    addResults = await addJobsBatch({
-      urls,
-      out_dir: outDir,
-      archive_password: addArchivePassword || undefined
-    }, (url) => detectSite(url) || undefined);
-    adding = false;
-    await refresh();
-    if (addResults.every((r) => r.ok)) {
-      addUrlsText = '';
-      addArchivePassword = '';
-      addResults = [];
-      showAdd = false;
+    addProgress = { done: 0, total: urls.length };
+    try {
+      addResults = await addJobsBatch({
+        urls,
+        out_dir: outDir,
+        archive_password: addArchivePassword || undefined
+      }, (url) => detectSite(url) || undefined, (done, total) => {
+        addProgress = { done, total };
+      });
+    } finally {
+      adding = false;
+      addProgress = null;
     }
+
+    await refresh();
+    const failed = addResults.filter((r) => !r.ok);
+    if (failed.length > 0) {
+      // Keep only the failed URLs so a retry does not re-add the ones that worked.
+      addUrlsText = failed.map((r) => r.url).join('\n');
+      return;
+    }
+
+    addUrlsText = '';
+    addArchivePassword = '';
+    addResults = [];
+    showAdd = false;
   }
 
   async function handleAction(id, action) {
-    lastError = '';
     try {
       await postAction(id, action);
       await refresh();
     } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
+      actionError = errMsg(err);
     }
   }
 
   async function handleGroupAction(groupId, action) {
-    lastError = '';
     try {
       await postGroupAction(groupId, action);
       await refresh();
     } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
+      actionError = errMsg(err);
     }
   }
 
-  async function confirmClear() {
-    lastError = '';
+  function settleConfirm(result) {
+    const resolve = confirmResolve;
+    confirmResolve = null;
+    confirmRun = null;
+    confirmOpen = false;
+    resolve?.(result);
+  }
+
+  function openConfirm(options, run = null) {
+    // A new request supersedes a pending one.
+    confirmResolve?.(false);
+    confirmResolve = null;
+    confirmOptions = options;
+    confirmRun = run;
+    confirmBusy = false;
+    confirmError = '';
+    confirmOpen = true;
+  }
+
+  // Closing mid-run would let the run's settle resolve the next request.
+  function closeConfirm() {
+    if (confirmBusy) {
+      return;
+    }
+    settleConfirm(false);
+  }
+
+  function requestConfirm(options) {
+    return new Promise((resolve) => {
+      openConfirm(options);
+      confirmResolve = resolve;
+    });
+  }
+
+  async function runClear() {
+    await clearJobs();
+    await refresh();
+  }
+
+  function requestClear() {
+    openConfirm({
+      title: 'Clear completed jobs',
+      message: 'Completed jobs are hidden from the list. Show them again with Include deleted.',
+      confirmLabel: 'Clear'
+    }, runClear);
+  }
+
+  async function handleConfirm() {
+    if (!confirmRun) {
+      settleConfirm(true);
+      return;
+    }
+
+    const run = confirmRun;
+    confirmBusy = true;
+    confirmError = '';
     try {
-      await clearJobs();
-      showClearConfirm = false;
-      await refresh();
+      await run();
+      settleConfirm(true);
     } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
+      confirmError = errMsg(err);
+    } finally {
+      confirmBusy = false;
     }
   }
 
@@ -264,54 +367,15 @@
       outDirPresets = Array.isArray(meta.out_dir_presets) ? meta.out_dir_presets : [];
       metaVersion = typeof meta.version === 'string' ? meta.version : '';
     } catch (err) {
-      metaError = err instanceof Error ? err.message : String(err);
+      metaError = errMsg(err);
       outDirPresets = [];
       metaVersion = '';
     }
   }
 
-  async function refreshLogs() {
-    if (!logsJob) return;
-    logsLoading = true;
-    logsError = '';
-    try {
-      logsEvents = await getEvents(logsJob.id, Number(logsLimit) || 50);
-    } catch (err) {
-      logsError = err instanceof Error ? err.message : String(err);
-    } finally {
-      logsLoading = false;
-    }
-  }
-
-  function stopLogsTimer() {
-    if (logsTimer) {
-      clearInterval(logsTimer);
-      logsTimer = null;
-    }
-  }
-
-  function startLogsTimer() {
-    stopLogsTimer();
-    if (!showLogs || !logsAutoRefresh) return;
-    const intervalMs = Math.max(1, Number(logsInterval) || 1) * 1000;
-    logsTimer = setInterval(refreshLogs, intervalMs);
-  }
-
   function openLogs(job) {
     logsJob = job;
-    logsEvents = [];
-    logsError = '';
     showLogs = true;
-    refreshLogs();
-    startLogsTimer();
-  }
-
-  function closeLogs() {
-    showLogs = false;
-    logsJob = null;
-    logsEvents = [];
-    logsError = '';
-    stopLogsTimer();
   }
 
   function applyTelegramSettings(telegram) {
@@ -330,19 +394,31 @@
 
   async function loadSettings() {
     settingsError = '';
+    settingsLoadError = '';
     settingsTelegramTestResult = '';
+    settingsTelegramTestError = '';
+    settingsLoaded = false;
+    settingsLoading = true;
     try {
       const settings = await getSettings();
       settingsConcurrency = settings.concurrency;
       settingsMaxAttempts = settings.max_attempts;
       settingsAutoDecrypt = settings.auto_decrypt;
       applyTelegramSettings(settings.telegram);
+      settingsLoaded = true;
     } catch (err) {
-      settingsError = err instanceof Error ? err.message : String(err);
+      settingsLoadError = errMsg(err);
+    } finally {
+      settingsLoading = false;
     }
   }
 
   async function saveSettings() {
+    // Saving defaults over a failed load would overwrite real settings.
+    if (!settingsLoaded) {
+      return;
+    }
+
     settingsError = '';
     settingsSaving = true;
     try {
@@ -365,7 +441,7 @@
       applyTelegramSettings(updated.telegram);
       showSettings = false;
     } catch (err) {
-      settingsError = err instanceof Error ? err.message : String(err);
+      settingsError = errMsg(err);
     } finally {
       settingsSaving = false;
     }
@@ -373,6 +449,7 @@
 
   async function testTelegram() {
     settingsTelegramTestResult = '';
+    settingsTelegramTestError = '';
     settingsTelegramTesting = true;
     try {
       const payload = {
@@ -381,9 +458,9 @@
         ...(settingsTelegramBotToken ? { bot_token: settingsTelegramBotToken } : {})
       };
       await testTelegramSettings(payload);
-      settingsTelegramTestResult = 'ok';
+      settingsTelegramTestResult = 'Test message sent.';
     } catch (err) {
-      settingsTelegramTestResult = err instanceof Error ? err.message : String(err);
+      settingsTelegramTestError = errMsg(err);
     } finally {
       settingsTelegramTesting = false;
     }
@@ -501,17 +578,11 @@
   $: parsedUrls = parseUrls(addUrlsText);
   $: sortedJobs = sortJobs(jobs, sortKey, sortDir);
   $: addErrors = addResults.filter((result) => !result.ok);
-  $: outDirPlaceholder = outDirFavorites[0] ?? outDirPresets[0] ?? 'Select a preset or type a path';
 
-  $: {
-    logsAutoRefresh;
-    logsInterval;
-    if (showLogs) startLogsTimer();
-  }
+  $: logsCurrentJob = logsJob ? (jobs.find((job) => job.id === logsJob.id) ?? logsJob) : null;
+  $: logsSubtitle = logsCurrentJob ? `Job #${logsCurrentJob.id} · ${displayStatus(logsCurrentJob)} · ${localTimeZone()}` : '';
 
-  $: logsSubtitle = logsJob ? `Job #${logsJob.id} · ${displayStatus(logsJob)} · ${localTimeZone()}` : '';
-
-  $: pageModalOpen = showAdd || showBrowser || showLogs || showSettings || showClearConfirm || watcherModalOpen;
+  $: pageModalOpen = showAdd || showBrowser || showLogs || showSettings || confirmOpen || watcherModalOpen;
   $: syncBodyScrollLock(pageModalOpen);
 
   onMount(() => {
@@ -526,7 +597,6 @@
     startSeriesPoll();
     return () => {
       stopTimer();
-      stopLogsTimer();
       stopSeriesPoll();
       window.removeEventListener('popstate', handlePopState);
       syncBodyScrollLock(false);
@@ -550,20 +620,27 @@
         <button class:active={activeTab === 'automations'} role="tab" aria-selected={activeTab === 'automations'} aria-controls="automations-panel" id="automations-tab" tabindex={activeTab === 'automations' ? 0 : -1} type="button" disabled={watcherModalOpen} on:click={() => selectTab('automations')} on:keydown={handleTabKey}>
           Automations
           {#if seriesIssueSummary.action > 0}
-            <span class="tab-badge" aria-label={`${seriesIssueSummary.action} series need action`}>{seriesIssueSummary.action}</span>
+            <span class="count-badge" aria-label={`${seriesIssueSummary.action} series need action`}>{seriesIssueSummary.action}</span>
           {:else if seriesIssueSummary.notFound > 0}
-            <span class="tab-badge muted" aria-label={`${seriesIssueSummary.notFound} series ${seriesIssueSummary.notFound === 1 ? 'has' : 'have'} episodes not found`}>{seriesIssueSummary.notFound}</span>
+            <span class="count-badge muted" aria-label={`${seriesIssueSummary.notFound} series ${seriesIssueSummary.notFound === 1 ? 'has' : 'have'} episodes not found`}>{seriesIssueSummary.notFound}</span>
           {/if}
         </button>
       </div>
-      {#if lastError}
-        <span class="badge badge-error" role="alert" title={lastError}>Error: {lastError}</span>
+      {#if pollError}
+        <span class="badge badge-error" role="alert" title={pollError}>Error: {pollError}</span>
       {/if}
     </div>
     <div class="toolbar">
       <button class="btn ghost" on:click={openSettings}>Settings</button>
     </div>
   </header>
+
+  {#if actionError}
+    <div class="alert error page-alert" role="alert">
+      <span>{actionError}</span>
+      <button class="btn tiny ghost" type="button" on:click={() => (actionError = '')}>Dismiss</button>
+    </div>
+  {/if}
 
   <div id="queue-panel" role="tabpanel" aria-labelledby="queue-tab" hidden={activeTab !== 'queue'}>
       <div class="stats">
@@ -576,6 +653,8 @@
       </div>
       <JobsTable
         {jobs}
+        loaded={jobsLoaded}
+        {requestConfirm}
         {sortedJobs}
         {statusOptions}
         {sortKey}
@@ -585,11 +664,11 @@
         bind:autoRefresh
         bind:refreshInterval
         {sortIndicator}
-        onRefresh={refresh}
+        onRefresh={() => refresh()}
         onToggleSort={toggleSort}
         onSetSort={setSort}
         onToggleSortDirection={toggleSortDirection}
-        onRequestClear={() => (showClearConfirm = true)}
+        onRequestClear={requestClear}
         onOpenLogs={openLogs}
         onJobAction={handleAction}
         onGroupAction={handleGroupAction}
@@ -597,7 +676,7 @@
   </div>
   <div id="automations-panel" role="tabpanel" aria-labelledby="automations-tab" hidden={activeTab !== 'automations'}>
     {#if activeTab === 'automations'}
-      <SeriesSection {outDirPresets} {outDirFavorites} active={activeTab === 'automations'} onAddFavorite={addOutDirFavorite} onRemoveFavorite={removeOutDirFavorite} onModalOpenChange={(open) => (watcherModalOpen = open)} onChanged={refresh} />
+      <SeriesSection {outDirPresets} {outDirFavorites} onAddFavorite={addOutDirFavorite} onRemoveFavorite={removeOutDirFavorite} onModalOpenChange={(open) => (watcherModalOpen = open)} onChanged={() => refresh()} onWatchesChanged={(watches) => (seriesWatches = watches)} {requestConfirm} />
     {/if}
   </div>
 </main>
@@ -613,11 +692,12 @@
   bind:addOutDir
   bind:addUrlsText
   bind:addArchivePassword
-  {outDirPlaceholder}
+  outDirPlaceholder={DEFAULT_OUT_DIR_PLACEHOLDER}
   {outDirPresets}
   {outDirFavorites}
   parsedUrlCount={parsedUrls.length}
   {adding}
+  {addProgress}
   {addError}
   {metaError}
   {addErrors}
@@ -631,22 +711,21 @@
 
 <LogsModal
   show={showLogs}
-  title="Job Events"
+  title="Job events"
   subtitle={logsSubtitle}
-  {logsEvents}
-  bind:logsLimit
-  bind:logsAutoRefresh
-  bind:logsInterval
-  {logsError}
-  {logsLoading}
-  onClose={closeLogs}
-  onRefresh={refreshLogs}
+  load={(limit) => getEvents(logsJob.id, limit)}
+  onClose={() => (showLogs = false)}
 />
 
-<ClearConfirmModal
-  show={showClearConfirm}
-  onClose={() => (showClearConfirm = false)}
-  onConfirm={confirmClear}
+<ConfirmModal
+  show={confirmOpen}
+  title={confirmOptions.title}
+  message={confirmOptions.message}
+  confirmLabel={confirmOptions.confirmLabel}
+  busy={confirmBusy}
+  error={confirmError}
+  onConfirm={handleConfirm}
+  onClose={closeConfirm}
 />
 
 <SettingsModal
@@ -663,6 +742,10 @@
   {settingsTelegramBotTokenSet}
   {settingsTelegramTesting}
   {settingsTelegramTestResult}
+  {settingsTelegramTestError}
+  {settingsLoading}
+  {settingsLoadError}
+  onRetryLoad={loadSettings}
   {settingsError}
   {settingsSaving}
   onClose={() => (showSettings = false)}
@@ -675,4 +758,5 @@
   favoritePaths={outDirFavorites}
   onSelect={selectBrowserPath}
   onAddFavorite={addOutDirFavorite}
+  onRemoveFavorite={removeOutDirFavorite}
 />

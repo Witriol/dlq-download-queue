@@ -1,19 +1,16 @@
 import { json } from '@sveltejs/kit';
-import { forward } from '$lib/server/dlq';
+import { forwardOrError } from '$lib/server/dlq';
 
 export async function GET({ fetch }: { fetch: typeof globalThis.fetch }) {
-  try {
-    return await forward(fetch, '/api/settings');
-  } catch (err) {
-    return json({ error: err instanceof Error ? err.message : 'dlq_unreachable' }, { status: 502 });
-  }
+  return forwardOrError(fetch, '/api/settings');
 }
 
 export async function POST({ fetch, request }: { fetch: typeof globalThis.fetch; request: Request }) {
+  let body: string;
   try {
-    const body = await request.text();
-    return await forward(fetch, '/api/settings', { method: 'POST', body });
+    body = await request.text();
   } catch (err) {
     return json({ error: err instanceof Error ? err.message : 'dlq_unreachable' }, { status: 502 });
   }
+  return forwardOrError(fetch, '/api/settings', { method: 'POST', body });
 }

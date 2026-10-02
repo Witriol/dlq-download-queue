@@ -1,3 +1,4 @@
+import { errMsg } from './errors';
 import type { BatchResult, JobView, Meta, Settings, SeriesAttentionEpisode, SeriesEpisode, SeriesIssueWatch, SeriesPreview, SeriesRefresh, SeriesWatch, TelegramSettingsUpdate } from './types';
 
 async function extractError(res: Response): Promise<string> {
@@ -61,9 +62,11 @@ export async function addJobsBatch(
   archive_password?: string;
   max_attempts?: number;
 },
-  siteResolver?: (url: string) => string | undefined
+  siteResolver?: (url: string) => string | undefined,
+  onProgress?: (done: number, total: number) => void
 ): Promise<BatchResult[]> {
   const results: BatchResult[] = [];
+  const total = payload.urls.length;
   for (const url of payload.urls) {
     const resolvedSite = payload.site ?? (siteResolver ? siteResolver(url) : undefined);
     try {
@@ -77,8 +80,10 @@ export async function addJobsBatch(
       });
       results.push({ url, ok: true, id: resp.id });
     } catch (err) {
-      results.push({ url, ok: false, error: err instanceof Error ? err.message : String(err) });
+      results.push({ url, ok: false, error: errMsg(err) });
     }
+
+    onProgress?.(results.length, total);
   }
   return results;
 }
