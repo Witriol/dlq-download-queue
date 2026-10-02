@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Build and deploy DLQ to Unraid
 # Usage: scripts/deploy-unraid.sh <cli|webui|all>
-# Config: Copy .env.example to .env and edit it
+# Config: Copy .env.example to .env and edit it, or export the same variables
 
 usage() {
   cat <<'EOF'
@@ -43,15 +43,18 @@ esac
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
 
-# Source .env
-if [[ ! -f "${repo_root}/.env" ]]; then
-  echo "ERROR: .env not found. Copy .env.example to .env and edit it." >&2
+# Config may already be in the environment (e.g. `sops exec-env`); a local
+# .env is sourced on top and wins.
+if [[ -f "${repo_root}/.env" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  . "${repo_root}/.env"
+  set +a
+fi
+if [[ -z "${REMOTE_HOST:-}" ]]; then
+  echo "ERROR: REMOTE_HOST not set. Copy .env.example to .env and edit it, or export the variables." >&2
   exit 1
 fi
-set -a
-# shellcheck source=/dev/null
-. "${repo_root}/.env"
-set +a
 
 # Read version
 VERSION="$(cat "${repo_root}/VERSION")"

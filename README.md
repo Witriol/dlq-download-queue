@@ -223,6 +223,7 @@ Defaults: completed `✅ {name} ({size}) finished in {duration}`, failure `❌ {
 DLQ is designed for **trusted networks** (home LAN, Docker internal networking). The HTTP API has no authentication.
 
 - **Do not** expose DLQ ports directly to the public internet. Use a reverse proxy with authentication (e.g., Caddy, Traefik, nginx) if remote access is needed.
+- Expose only the web UI port through that proxy; the UI forwards every API call. Browser job notifications need https (or localhost), so they work through the proxy but not over plain http on a LAN IP.
 - Set `ARIA2_SECRET` even in Docker to prevent unauthorized RPC access to aria2.
 - All `out_dir` values are validated against `DATA_*` container paths to prevent path traversal.
 - Supply the Webshare session token through `DLQ_WEBSHARE_WST` (preferred), `WEBSHARE_WST`, or `WS_WST`. It is sent only in Webshare request bodies/headers and is never persisted in jobs or logged.
@@ -269,7 +270,12 @@ scripts/deploy-unraid.sh cli
 scripts/deploy-unraid.sh webui
 ```
 
-The `.env` file is your single source of truth for deployment configuration:
+The script reads its configuration from `.env`. It can also take the same
+variables from the environment, so the config can live elsewhere, e.g. an
+encrypted file: `sops exec-env deploy.sops.env 'scripts/deploy-unraid.sh all'`.
+A local `.env` is sourced on top and wins.
+
+Variables:
 - `REMOTE_HOST` - SSH alias for your Unraid server
 - `DATA_*` - Volume mappings (e.g., `DATA_TVSHOWS=/mnt/user/tvshows:/data/tvshows`)
 - `STATE_MOUNT` - State/config volume mapping
