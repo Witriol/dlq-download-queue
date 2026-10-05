@@ -56,6 +56,14 @@ if [[ -z "${REMOTE_HOST:-}" ]]; then
   exit 1
 fi
 
+# SQLite WAL needs real file locks and a shared -shm mmap; Unraid's shfs FUSE
+# layer (/mnt/user) does not share either with /mnt/cache openers such as
+# backup jobs, which can then delete the live WAL under dlqd.
+if [[ "${STATE_MOUNT:-}" == /mnt/user/* ]]; then
+  echo "ERROR: STATE_MOUNT must use a pool path (e.g. /mnt/cache/appdata/dlq:/state), not /mnt/user" >&2
+  exit 1
+fi
+
 # Read version
 VERSION="$(cat "${repo_root}/VERSION")"
 [[ -z "${VERSION}" ]] && { echo "ERROR: VERSION is empty" >&2; exit 1; }

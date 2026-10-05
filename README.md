@@ -278,7 +278,11 @@ A local `.env` is sourced on top and wins.
 Variables:
 - `REMOTE_HOST` - SSH alias for your Unraid server
 - `DATA_*` - Volume mappings (e.g., `DATA_TVSHOWS=/mnt/user/tvshows:/data/tvshows`)
-- `STATE_MOUNT` - State/config volume mapping
+- `STATE_MOUNT` - State/config volume mapping. Use a pool path such as
+  `/mnt/cache/appdata/dlq`, not `/mnt/user/...`: the SQLite database runs in
+  WAL mode, and Unraid's shfs FUSE layer does not share its locks or `-shm`
+  memory with anything opening the file through `/mnt/cache` (e.g. a backup
+  job), which can delete the live WAL and break the database
 - `DLQ_HTTP_PORT` - Port for the DLQ API container
 - `DLQ_WEBUI_PORT` - Port for the web UI container
 - `PUID`/`PGID`/`TZ` - Runtime user and timezone settings
