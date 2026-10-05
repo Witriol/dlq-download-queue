@@ -117,6 +117,7 @@ func main() {
 		Settings: settings,
 		Series:   seriesManager,
 		Notifier: notifier,
+		DB:       dbConn,
 	}
 	ln, err := net.Listen("tcp", listen)
 	if err != nil {

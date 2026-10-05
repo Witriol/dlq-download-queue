@@ -148,6 +148,8 @@ DLQ_API=http://127.0.0.1:8099 npm run dev
 
 Presets for out_dir are served from `GET /meta` and derived from `DATA_*` volume mappings (container paths).
 
+`GET /healthz` (UI: `GET /api/healthz`) reads the `jobs` table and returns 503 when the database fails, so probe it rather than `/meta`.
+
 ## How it works
 
 - `dlqd` daemon stores jobs in SQLite, resolves URLs, and starts downloads in aria2 via JSON-RPC.

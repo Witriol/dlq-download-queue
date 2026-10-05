@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Witriol/dlq-download-queue/internal/notify"
 	"github.com/Witriol/dlq-download-queue/internal/queue"
@@ -20,6 +21,8 @@ import (
 )
 
 const maxRequestBodyBytes = 1 << 20
+
+const healthCheckTimeout = 5 * time.Second
 
 type Queue interface {
 	CreateJob(ctx context.Context, url, outDir, name, site, archivePassword string, maxAttempts int) (int64, error)
@@ -44,10 +47,12 @@ type Server struct {
 	Settings *Settings
 	Series   *series.Manager
 	Notifier *notify.Notifier
+	DB       *sql.DB
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/meta", s.handleMeta)
 	mux.HandleFunc("/jobs", s.handleJobs)
 	mux.HandleFunc("/jobs/clear", s.handleJobsClear)
@@ -82,6 +87,31 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		meta = &Meta{}
 	}
 	writeJSON(w, http.StatusOK, meta)
+}
+
+// handleHealthz reads a real table: a broken WAL fails page reads while the
+// HTTP side and /meta keep answering.
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if s.DB == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "db_not_configured"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), healthCheckTimeout)
+	defer cancel()
+
+	var one int
+	err := s.DB.QueryRowContext(ctx, "SELECT 1 FROM jobs LIMIT 1").Scan(&one)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 type addJobRequest struct {

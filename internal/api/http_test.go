@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/Witriol/dlq-download-queue/internal/db"
 	"github.com/Witriol/dlq-download-queue/internal/notify"
 	"github.com/Witriol/dlq-download-queue/internal/queue"
 )
@@ -277,5 +279,29 @@ func TestHandleSettingsTelegramTestNotInitialized(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleHealthz(t *testing.T) {
+	conn, err := db.Open(filepath.Join(t.TempDir(), "dlq.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer conn.Close()
+
+	srv := &Server{DB: conn}
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("healthy db: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("closed db: expected 503, got %d", rec.Code)
 	}
 }
