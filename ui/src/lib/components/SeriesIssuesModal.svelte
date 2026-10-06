@@ -16,8 +16,8 @@
   export let formatDate = () => '';
   export let episodeCode = () => '';
 
-  const SEARCH_WINDOW_HINT = 'Searched for 72 hours without finding a matching release on Webshare.';
-  const STRICT_NOT_FOUND_HINT = 'No release matched your quality profile exactly within 72 hours; the strict policy rejects alternatives. Change the policy or quality profile, or check the log.';
+  const SEARCH_WINDOW_HINT = 'The search window ended without a matching release on Webshare.';
+  const STRICT_NOT_FOUND_HINT = 'No release matched your quality profile exactly before the search window ended; the strict policy rejects alternatives. Change the policy or quality profile, or check the log.';
   const PAUSED_HINT = 'Resume the watch to search again.';
 
   $: sections = (watches || []).map((watch) => ({ watch, rows: buildRows(watch) }));

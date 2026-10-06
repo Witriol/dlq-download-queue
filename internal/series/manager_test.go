@@ -2037,3 +2037,122 @@ func TestSyncFollowsRetriedFailedJob(t *testing.T) {
 		})
 	}
 }
+
+// setEpisodeAirAge moves the fixture episode's air time to age before now.
+func setEpisodeAirAge(manager *Manager, age time.Duration) {
+	number := 2
+	air := manager.now().Add(-age)
+	manager.TVMaze = &fakeTVMaze{episodes: []TVMazeEpisode{{ID: 1002, Name: "Second", Season: 1, Number: &number, Airstamp: &air}}}
+}
+
+type countingWebshare struct {
+	fakeWebshare
+	calls int
+}
+
+func (c *countingWebshare) SearchVideos(ctx context.Context, q string, a, b int) ([]resolver.WebshareSearchResult, error) {
+	c.calls++
+	return c.fakeWebshare.SearchVideos(ctx, q, a, b)
+}
+
+func TestManagerPastEpisodeSearchesTwiceThenGivesUp(t *testing.T) {
+	manager, store, _, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-Other.mkv", 0)
+	ctx := context.Background()
+	setEpisodeAirAge(manager, 30*24*time.Hour)
+	webshare := &countingWebshare{fakeWebshare: *manager.Webshare.(*fakeWebshare)}
+	manager.Webshare = webshare
+	start := manager.now()
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.ListEvents(ctx, watchID, 100)
+	firstCalls := webshare.calls
+	if err != nil || firstCalls == 0 {
+		t.Fatalf("calls = %d, err = %v", firstCalls, err)
+	}
+	wantNext := "next search " + formatEventTime(start.Add(pastEpisodeRetryAfter))
+	if got := latestEventMessage(t, store, watchID); !strings.HasPrefix(got, "S01E02 search #1: ") || !strings.HasSuffix(got, wantNext) {
+		t.Fatalf("event = %q; want search #1 ending %q", got, wantNext)
+	}
+
+	manager.Now = func() time.Time { return start.Add(24 * time.Hour) }
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	after, err := store.ListEvents(ctx, watchID, 100)
+	if err != nil || webshare.calls != firstCalls || len(after) != len(events) {
+		t.Fatalf("skipped check: calls = %d, events %d -> %d, err = %v", webshare.calls, len(events), len(after), err)
+	}
+
+	manager.Now = func() time.Time { return start.Add(pastEpisodeRetryAfter) }
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	episodes, err := store.ListEpisodes(ctx, watchID)
+	if err != nil || webshare.calls != 2*firstCalls || episodes[0].State != StateNeedsAttention {
+		t.Fatalf("calls = %d, episodes = %+v, err = %v", webshare.calls, episodes, err)
+	}
+	if got := latestEventMessage(t, store, watchID); !strings.HasPrefix(got, "S01E02 gave up after 7d: ") {
+		t.Fatalf("event = %q", got)
+	}
+}
+
+func TestManagerPastEpisodeBalancedQueuesAlternativeAtFirstSearch(t *testing.T) {
+	manager, store, queue, watchID := newManagerFixture(t, FallbackBalanced, "Some.Show.S01E02.1080p.WEB-DL.x265-Other.mkv", 0)
+	ctx := context.Background()
+	setPreferredWait(t, store, watchID, 12*time.Hour)
+	setEpisodeAirAge(manager, 30*24*time.Hour)
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	episodes, err := store.ListEpisodes(ctx, watchID)
+	if err != nil || queue.calls != 1 || episodes[0].State != StateQueued {
+		t.Fatalf("calls = %d, episodes = %+v, err = %v", queue.calls, episodes, err)
+	}
+	if got := latestEventMessage(t, store, watchID); !strings.Contains(got, "(alternative for past episode)") {
+		t.Fatalf("event = %q", got)
+	}
+}
+
+func TestManagerPastEpisodeManualNeedsReviewAtFirstSearch(t *testing.T) {
+	manager, store, _, watchID := newManagerFixture(t, FallbackManual, "Some.Show.S01E02.1080p.WEB-DL.x265-Other.mkv", 0)
+	ctx := context.Background()
+	setPreferredWait(t, store, watchID, 12*time.Hour)
+	setEpisodeAirAge(manager, 30*24*time.Hour)
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	attention, err := manager.ListAttention(ctx, watchID)
+	if err != nil || len(attention) != 1 || len(attention[0].Candidates) != 1 {
+		t.Fatalf("attention = %+v, err = %v", attention, err)
+	}
+	if got, want := latestEventMessage(t, store, watchID), "S01E02 needs review: 1 alternatives"; got != want {
+		t.Fatalf("event = %q; want %q", got, want)
+	}
+}
+
+func TestManagerPastEpisodeCheckNowSearchesWithinWeek(t *testing.T) {
+	manager, store, _, watchID := newManagerFixture(t, FallbackStrict, "Some.Show.S01E02.1080p.WEB-DL.x265-Other.mkv", 0)
+	ctx := context.Background()
+	setEpisodeAirAge(manager, 30*24*time.Hour)
+	webshare := &countingWebshare{fakeWebshare: *manager.Webshare.(*fakeWebshare)}
+	manager.Webshare = webshare
+	start := manager.now()
+	if err := manager.processWatch(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	firstCalls := webshare.calls
+
+	manager.Now = func() time.Time { return start.Add(24 * time.Hour) }
+	if _, err := manager.CheckNow(ctx, watchID); err != nil {
+		t.Fatal(err)
+	}
+	episodes, err := store.ListEpisodes(ctx, watchID)
+	if err != nil || webshare.calls != 2*firstCalls || episodes[0].State != StatePreferredNotFound {
+		t.Fatalf("calls = %d, episodes = %+v, err = %v", webshare.calls, episodes, err)
+	}
+	wantNext := "next search " + formatEventTime(start.Add(pastEpisodeRetryAfter))
+	if got := latestEventMessage(t, store, watchID); !strings.HasPrefix(got, "S01E02 search #2: ") || !strings.HasSuffix(got, wantNext) {
+		t.Fatalf("event = %q; want search #2 ending %q", got, wantNext)
+	}
+}

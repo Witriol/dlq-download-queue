@@ -897,7 +897,7 @@
     <div class="table-toolbar automation-toolbar">
       <div>
         <h2 id="series-heading">Automations</h2>
-        <p class="muted">Searches every 15 min after an episode ends, then hourly, then every 3 h for up to 3 days.</p>
+        <p class="muted">Searches every 15 min after an episode ends, then hourly, then every 3 h for up to 3 days. Episodes aired before tracking are searched once, again a week later, then flagged.</p>
         {#if watches.length > 0 && refreshInfo}<p class="muted" title={formatDateTimeShort(refreshInfo.next_refresh_at)}>TVmaze schedule refreshes daily at {refreshTimeOfDay(refreshInfo.next_refresh_at)} · next {relativeTime(refreshInfo.next_refresh_at)}</p>{/if}
       </div>
       <div class="actions">

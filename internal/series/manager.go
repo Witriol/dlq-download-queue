@@ -26,6 +26,7 @@ const (
 	maxConcurrentWatchChecks = 4
 	defaultEpisodeRuntime    = 60 * time.Minute
 	searchGiveUpAfter        = 72 * time.Hour
+	pastEpisodeRetryAfter    = 7 * 24 * time.Hour
 	minimumCheckInterval     = 5 * time.Minute
 	dailyRefreshAtUTC        = 6 * time.Hour
 	endedShowCheckInterval   = 7 * 24 * time.Hour
@@ -40,7 +41,8 @@ const (
 )
 
 // searchTiers set the release search interval by time since an episode's
-// search window started. The window closes at searchGiveUpAfter.
+// search window started. The window closes at searchGiveUpAfter. Past
+// episodes (see searchRelease) skip the tiers.
 var searchTiers = []struct{ before, every time.Duration }{
 	{before: 6 * time.Hour, every: 15 * time.Minute},
 	{before: 24 * time.Hour, every: time.Hour},
@@ -807,23 +809,31 @@ func (m *Manager) syncUnfinishedJobs(ctx context.Context) error {
 	return nil
 }
 
+// checkTrigger is what started a watch check.
+type checkTrigger int
+
+const (
+	checkScheduled checkTrigger = iota
+	checkManual
+)
+
 func (m *Manager) processWatch(ctx context.Context, id int64) error {
-	return m.processWatchWithOptions(ctx, id, false)
+	return m.processWatchWithOptions(ctx, id, checkScheduled)
 }
 
 // processWatchWithRecovery is used only by the explicit Check now action.
 // Manual fallback episodes retain their server-generated candidate snapshot;
 // all other exhausted episodes get a new, user-requested search cycle.
 func (m *Manager) processWatchWithRecovery(ctx context.Context, id int64) error {
-	return m.processWatchWithOptions(ctx, id, true)
+	return m.processWatchWithOptions(ctx, id, checkManual)
 }
 
-func (m *Manager) processWatchWithOptions(ctx context.Context, id int64, recoverExhausted bool) error {
+func (m *Manager) processWatchWithOptions(ctx context.Context, id int64, trigger checkTrigger) error {
 	if !m.startWatchRun(id) {
 		return ErrWatchCheckInProgress
 	}
 	defer m.finishWatchRun(id)
-	if recoverExhausted {
+	if trigger == checkManual {
 		w, err := m.Store.GetWatch(ctx, id)
 		if err != nil {
 			return err
@@ -842,7 +852,7 @@ func (m *Manager) processWatchWithOptions(ctx context.Context, id int64, recover
 			m.addEvent(ctx, id, 0, "info", "exhausted release searches reset by manual check", mustJSON(map[string]any{"episodes": reset}))
 		}
 	}
-	err := m.processWatchUnlocked(ctx, id)
+	err := m.processWatchUnlocked(ctx, id, trigger)
 	if err != nil {
 		m.recordWatchFailure(ctx, id, err)
 	}
@@ -916,7 +926,7 @@ func (m *Manager) recordWatchFailure(ctx context.Context, id int64, checkErr err
 	m.addEvent(ctx, id, 0, "error", "watch check failed", mustJSON(map[string]string{"error": checkErr.Error()}))
 }
 
-func (m *Manager) processWatchUnlocked(ctx context.Context, id int64) error {
+func (m *Manager) processWatchUnlocked(ctx context.Context, id int64, trigger checkTrigger) error {
 	w, err := m.Store.GetWatch(ctx, id)
 	if err != nil {
 		return err
@@ -1040,8 +1050,17 @@ func (m *Manager) processWatchUnlocked(ctx context.Context, id int64) error {
 			}
 			continue
 		}
+		// A past episode searches once, then again after pastEpisodeRetryAfter;
+		// Check now searches it in between. Read search_started_at without
+		// StartEpisodeSearch, which writes it.
+		if started, ok := parseNullTime(ep.SearchStartedAt); ok && trigger == checkScheduled && started.Sub(searchFrom) >= searchGiveUpAfter && now.Before(started.Add(pastEpisodeRetryAfter)) {
+			handled = true
+			inFlight = true
+			considerNext(started.Add(pastEpisodeRetryAfter))
+			continue
+		}
 		handled = true
-		nextSearch, scheduled, err := m.searchRelease(ctx, w, ep, profile, prefs, now)
+		nextSearch, scheduled, err := m.searchRelease(ctx, w, ep, profile, prefs, searchFrom, now)
 		if err != nil {
 			return err
 		}
@@ -1093,11 +1112,18 @@ func (m *Manager) processWatchUnlocked(ctx context.Context, id int64) error {
 
 // searchRelease runs one release search for an aired episode and applies the
 // watch's fallback policy. It returns the episode's next search time when the
-// episode stays in its search window.
-func (m *Manager) searchRelease(ctx context.Context, w *Watch, ep *Episode, profile ReleaseProfile, prefs map[string]string, now time.Time) (time.Time, bool, error) {
+// episode stays in its search window. A past episode, whose window started at
+// least searchGiveUpAfter after searchFrom, is searched at window start and
+// once more pastEpisodeRetryAfter later, with the preferred wait expired.
+func (m *Manager) searchRelease(ctx context.Context, w *Watch, ep *Episode, profile ReleaseProfile, prefs map[string]string, searchFrom, now time.Time) (time.Time, bool, error) {
 	windowStart, err := m.Store.StartEpisodeSearch(ctx, ep.ID, now)
 	if err != nil {
 		return time.Time{}, false, err
+	}
+	past := windowStart.Sub(searchFrom) >= searchGiveUpAfter
+	giveUpAfter := searchGiveUpAfter
+	if past {
+		giveUpAfter = pastEpisodeRetryAfter
 	}
 	scored, err := m.searchEpisode(ctx, w.SearchTitle, ep.Season, ep.Episode, profile, prefs)
 	if err != nil {
@@ -1118,10 +1144,13 @@ func (m *Manager) searchRelease(ctx context.Context, w *Watch, ep *Episode, prof
 	}
 	reason := queueReasonExact
 	preferredWait := time.Duration(w.PreferredWaitSeconds) * time.Second
-	waitExpired := !now.Before(windowStart.Add(preferredWait))
+	waitExpired := past || !now.Before(windowStart.Add(preferredWait))
 	if chosen == nil && w.FallbackPolicy == FallbackBalanced && waitExpired && len(accepted) > 0 {
 		chosen = &accepted[0]
 		reason = "alternative after " + shortDuration(preferredWait)
+		if past {
+			reason = "alternative for past episode"
+		}
 	}
 	if chosen != nil {
 		snapshot := mustJSON(candidateView(*chosen))
@@ -1148,7 +1177,7 @@ func (m *Manager) searchRelease(ctx context.Context, w *Watch, ep *Episode, prof
 		m.addEvent(ctx, w.ID, ep.ID, "warning", fmt.Sprintf("%s needs review: %d alternatives", code, len(accepted)), details)
 		return time.Time{}, false, nil
 	}
-	if now.Sub(windowStart) >= searchGiveUpAfter {
+	if now.Sub(windowStart) >= giveUpAfter {
 		if w.FallbackPolicy == FallbackManual {
 			if err := m.Store.SetEpisodeAttention(ctx, ep.ID, mustJSON(candidateViews(accepted))); err != nil {
 				return time.Time{}, false, err
@@ -1160,14 +1189,17 @@ func (m *Manager) searchRelease(ctx context.Context, w *Watch, ep *Episode, prof
 		if len(accepted) > 0 {
 			cause = fmt.Sprintf("no exact release, %d alternatives", len(accepted))
 		}
-		m.addEvent(ctx, w.ID, ep.ID, "warning", fmt.Sprintf("%s gave up after %s: %s", code, shortDuration(searchGiveUpAfter), cause), details)
+		m.addEvent(ctx, w.ID, ep.ID, "warning", fmt.Sprintf("%s gave up after %s: %s", code, shortDuration(giveUpAfter), cause), details)
 		return time.Time{}, false, nil
 	}
 
 	if err := m.Store.SetEpisodeState(ctx, ep.ID, StatePreferredNotFound); err != nil {
 		log.Printf("series watch %d: set episode state: %v", w.ID, err)
 	}
-	next := nextSearchAt(w, windowStart, now)
+	next := windowStart.Add(pastEpisodeRetryAfter)
+	if !past {
+		next = nextSearchAt(w, windowStart, now)
+	}
 	if next.Before(now.Add(minimumCheckInterval)) {
 		next = now.Add(minimumCheckInterval)
 	}
@@ -1336,6 +1368,10 @@ func formatEventTime(t time.Time) string {
 }
 
 func shortDuration(d time.Duration) string {
+	// Whole weeks read as days; 72h stays "72h".
+	if d >= 7*24*time.Hour && d%(7*24*time.Hour) == 0 {
+		return fmt.Sprintf("%dd", int64(d/(24*time.Hour)))
+	}
 	if d%time.Hour == 0 {
 		return fmt.Sprintf("%dh", int64(d/time.Hour))
 	}
