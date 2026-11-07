@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -40,7 +41,7 @@ func TestMaybeDecryptRejectsRARWithoutSignature(t *testing.T) {
 
 func TestArchiveCommandArgs7z(t *testing.T) {
 	args := archiveCommandArgs("7z", "/data/a.rar", "/out dir", "pw")
-	want := []string{"x", "-y", "-aoa", "-o/out dir", "-ppw", "/data/a.rar"}
+	want := []string{"x", "-y", "-aoa", "-bb1", "-o/out dir", "-ppw", "/data/a.rar"}
 	if len(args) != len(want) {
 		t.Fatalf("args len = %d, want %d (%v)", len(args), len(want), args)
 	}
@@ -64,7 +65,7 @@ func TestArchiveStreamCommandArgs(t *testing.T) {
 	}
 
 	tarArgs := archiveStreamTarCommandArgs("/out dir")
-	tarWant := []string{"x", "-y", "-aoa", "-si", "-ttar", "-o/out dir"}
+	tarWant := []string{"x", "-y", "-aoa", "-si", "-ttar", "-bb1", "-o/out dir"}
 	if len(tarArgs) != len(tarWant) {
 		t.Fatalf("tar args len = %d, want %d (%v)", len(tarArgs), len(tarWant), tarArgs)
 	}
@@ -317,5 +318,146 @@ func TestHasRARSignature(t *testing.T) {
 		if got != tc.want {
 			t.Fatalf("hasRARSignature(%q) = %v, want %v", path, got, tc.want)
 		}
+	}
+}
+
+func TestSplitExtractedPaths(t *testing.T) {
+	// Captured from 7-Zip 25.01 `x -bb1` on a zip whose comment mimics entries.
+	out := strings.Join([]string{
+		"Extracting archive: c.zip",
+		"--",
+		"Path = c.zip",
+		"Type = zip",
+		"Comment = ",
+		"{",
+		"- victim.txt",
+		"}",
+		"",
+		"- after blank",
+		"}",
+		"",
+		"- Movie (2020)/",
+		"- Movie (2020)/Sub dir/- dash.srt",
+		"Everything is Ok",
+		"",
+		"Size:       1",
+	}, "\n")
+
+	paths, rest := splitExtractedPaths(out)
+
+	got := map[string]bool{}
+	for _, p := range paths {
+		got[p] = true
+	}
+	if len(paths) != 2 || !got["Movie (2020)/"] || !got["Movie (2020)/Sub dir/- dash.srt"] {
+		t.Fatalf("paths = %q", paths)
+	}
+	if strings.Contains(rest, "dash.srt") || !strings.Contains(rest, "Everything is Ok") {
+		t.Fatalf("rest = %q", rest)
+	}
+}
+
+func TestSplitExtractedPathsFailure(t *testing.T) {
+	// Captured from 7-Zip 25.01 `x -bb1` with a wrong password.
+	out := strings.Join([]string{
+		"- s/",
+		"T s/f1",
+		"ERROR: Data Error in encrypted file. Wrong password? : s/f1",
+		"Sub items Errors: 1",
+	}, "\n")
+
+	paths, rest := splitExtractedPaths(out)
+
+	if len(paths) != 0 {
+		t.Fatalf("paths = %q, want none without success line", paths)
+	}
+	want := "ERROR: Data Error in encrypted file. Wrong password? : s/f1\nSub items Errors: 1"
+	if rest != want {
+		t.Fatalf("rest = %q, want %q", rest, want)
+	}
+}
+
+func TestAddWriteBits(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "out")
+	sub := filepath.Join(dir, "d")
+	file := filepath.Join(sub, "f.txt")
+	unlisted := filepath.Join(dir, "other.txt")
+	escape := filepath.Join(parent, "escape.txt")
+	link := filepath.Join(dir, "link")
+
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	for _, p := range []string{file, unlisted, escape} {
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+	}
+	if err := os.Symlink(escape, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	// Mkdir/WriteFile modes are narrowed by the test process umask; pin them.
+	start := map[string]os.FileMode{dir: 0o755, sub: 0o755, file: 0o644, unlisted: 0o644, escape: 0o644}
+	for p, mode := range start {
+		if err := os.Chmod(p, mode); err != nil {
+			t.Fatalf("chmod %s: %v", p, err)
+		}
+	}
+
+	addWriteBits(dir, []string{"d/", "d/f.txt", "link", "../escape.txt", "/abs"}, 0o020)
+
+	want := map[string]os.FileMode{dir: 0o755, sub: 0o775, file: 0o664, unlisted: 0o644, escape: 0o644}
+	for p, mode := range want {
+		info, err := os.Stat(p)
+		if err != nil {
+			t.Fatalf("stat %s: %v", p, err)
+		}
+		if got := info.Mode().Perm(); got != mode {
+			t.Errorf("%s: mode %o, want %o", filepath.Base(p), got, mode)
+		}
+	}
+}
+
+func TestAddWriteBitsNoBitsLeavesModes(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	if err := os.Chmod(file, 0o644); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+
+	addWriteBits(dir, []string{"f.txt"}, 0)
+
+	info, err := os.Stat(file)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o644 {
+		t.Fatalf("mode %o, want 644", got)
+	}
+}
+
+func TestAddWriteBitsKeepsSetgid(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "d")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chmod(sub, 0o755|os.ModeSetgid); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+
+	addWriteBits(dir, []string{"d/"}, 0o020)
+
+	info, err := os.Stat(sub)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	want := 0o775 | os.ModeSetgid
+	if got := info.Mode() & (os.ModePerm | os.ModeSetgid); got != want {
+		t.Fatalf("mode %v, want %v", got, want)
 	}
 }

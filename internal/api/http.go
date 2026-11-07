@@ -555,8 +555,8 @@ func (s *Server) handleBrowseMkdir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create directory
-	if err := os.MkdirAll(req.Path, 0755); err != nil {
+	// Create directory; the process umask (UMASK) narrows the mode.
+	if err := os.MkdirAll(req.Path, 0777); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}

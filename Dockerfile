@@ -7,6 +7,8 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=mod -ldflags "-X main.ve
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=mod -ldflags "-X main.version=${VERSION}" -o /out/dlqd ./cmd/dlqd
 
 FROM debian:bookworm-slim
+# internal/queue/archive_decryptor.go parses 7z -bb1 output (verified on
+# 25.01); re-check it when backports moves 7zip to a new version.
 RUN printf '%s\n' \
       'deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware' \
       'deb http://deb.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware' \

@@ -91,6 +91,10 @@ else
 fi
 DLQ_WEBUI_PORT="${DLQ_WEBUI_PORT:-8098}"
 
+# Unraid shares control access per SMB user, and every Unraid user is in the
+# users group (100); group-writable files let them edit what dlq downloads.
+UMASK="${UMASK:-002}"
+
 # Constants
 IMAGE_REPO="dlq"
 CONTAINER_NAME="dlq"
@@ -178,6 +182,7 @@ docker run -d --name ${CONTAINER_NAME} --restart unless-stopped \
   ${ENV_FLAGS[*]} \
   -e PUID=${PUID} \
   -e PGID=${PGID} \
+  -e UMASK=${UMASK} \
   -e TZ=${TZ} \
   ${IMAGE_TAG_LATEST} && \
 for img in \$(docker images --format '{{.Repository}}:{{.Tag}}' ${IMAGE_REPO} | awk '\$0 !~ /:latest$/'); do docker rmi \"\${img}\" >/dev/null 2>&1 || true; done"

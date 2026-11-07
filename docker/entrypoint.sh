@@ -55,6 +55,12 @@ fi
 
 ARIA2_OPTS="--enable-rpc --rpc-listen-all=false --rpc-listen-port=${RPC_PORT} --dir=${ARIA2_DIR} --max-concurrent-downloads=${CONCURRENCY} --max-connection-per-server=${ARIA2_MAX_CONN_PER_SERVER} --summary-interval=${SUMMARY_INTERVAL} --console-log-level=${CONSOLE_LOG_LEVEL} --show-console-readout=${ARIA2_SHOW_CONSOLE_READOUT} --continue=true --check-integrity=true --disable-ipv6=true"
 
+# Inherited through gosu by aria2c and dlqd, so it sets the mode of every
+# downloaded file and created directory.
+if [ -n "${UMASK:-}" ]; then
+  umask "${UMASK}"
+fi
+
 RUN_AS=""
 if [ -n "${PUID:-}" ] || [ -n "${PGID:-}" ]; then
   PUID="${PUID:-1000}"

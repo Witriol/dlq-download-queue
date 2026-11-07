@@ -199,6 +199,7 @@ Defaults: completed `✅ {name} ({size}) finished in {duration}`, failure `❌ {
 | `DLQ_WEBUI_PORT` | `8098` | Web UI container port |
 | `DLQ_WEBSHARE_WST` | — | Webshare session token used by series search and downloads |
 | `PUID` / `PGID` | — | Run dlqd + aria2 as this user/group |
+| `UMASK` | — (`002` in `deploy-unraid.sh`) | File mode mask for downloads and created directories; extracted archive entries get the group/other write bits it allows |
 | `DATA_*` | — | Volume mappings (e.g. `DATA_TVSHOWS=/mnt/user/tvshows:/data/tvshows`) |
 
 ### Aria2
@@ -287,7 +288,7 @@ Variables:
   job), which can delete the live WAL and break the database
 - `DLQ_HTTP_PORT` - Port for the DLQ API container
 - `DLQ_WEBUI_PORT` - Port for the web UI container
-- `PUID`/`PGID`/`TZ` - Runtime user and timezone settings
+- `PUID`/`PGID`/`UMASK`/`TZ` - Runtime user, file mode mask (default `002`) and timezone settings
 
 The deploy script automatically discovers all `DATA_*` variables and passes them through so presets can be derived in the app.
 

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,7 +22,15 @@ type ArchiveDecryptor interface {
 
 type commandArchiveDecryptor struct {
 	command string
+	// Group/other write bits to add to extracted entries.
+	writeBits os.FileMode
 }
+
+// Read at package init, before any goroutine runs: the umask can only be read
+// by setting it, which briefly changes it for the whole process.
+var processUmask = readUmask()
+
+const groupOtherWrite os.FileMode = 0o022
 
 var (
 	rarV4Signature = []byte{'R', 'a', 'r', '!', 0x1a, 0x07, 0x00}
@@ -29,7 +39,8 @@ var (
 
 func NewArchiveDecryptor() ArchiveDecryptor {
 	return &commandArchiveDecryptor{
-		command: "7z",
+		command:   "7z",
+		writeBits: groupOtherWrite &^ processUmask,
 	}
 }
 
@@ -50,13 +61,106 @@ func (d *commandArchiveDecryptor) MaybeDecrypt(ctx context.Context, archivePath,
 	}
 	password := strings.TrimSpace(overridePassword)
 	out, err := runArchiveTool(ctx, command, resolvedArchivePath, outDir, password)
+	extracted, out := splitExtractedPaths(out)
 	if err == nil {
+		addWriteBits(outDir, extracted, d.writeBits)
 		return true, nil
 	}
 	if out == "" {
 		out = err.Error()
 	}
 	return true, fmt.Errorf("archive decrypt command failed: %s", out)
+}
+
+// 7z -bb1 output, verified on 7-Zip 25.01 (Debian bookworm-backports). The
+// Dockerfile installs whatever version backports carries; re-check this when
+// it changes.
+//
+// On success, entries are one "- <path>" line each, relative to -o,
+// directories ending in "/", overwritten entries included, as one unbroken
+// block right before the last "Everything is Ok". The header above it can
+// echo an archive comment verbatim, so "- " lines elsewhere are not entries.
+// On failure, 7z prints a "T <path>" line per entry it tried.
+const (
+	extractedEntryPrefix = "- "
+	attemptedEntryPrefix = "T "
+	extractSuccessLine   = "Everything is Ok"
+)
+
+// splitExtractedPaths returns the extracted entries and the output without
+// per-entry lines, so error messages are not a full file listing.
+func splitExtractedPaths(out string) ([]string, string) {
+	lines := strings.Split(out, "\n")
+
+	var paths []string
+	for i := len(lines) - 1; i >= 0; i-- {
+		if lines[i] != extractSuccessLine {
+			continue
+		}
+
+		for j := i - 1; j >= 0; j-- {
+			path, ok := strings.CutPrefix(lines[j], extractedEntryPrefix)
+			if !ok {
+				break
+			}
+			paths = append(paths, path)
+		}
+		break
+	}
+
+	var rest []string
+	for _, line := range lines {
+		if strings.HasPrefix(line, extractedEntryPrefix) || strings.HasPrefix(line, attemptedEntryPrefix) {
+			continue
+		}
+		rest = append(rest, line)
+	}
+	return paths, strings.TrimSpace(strings.Join(rest, "\n"))
+}
+
+// 7z restores the modes stored in the archive and a umask can only clear bits,
+// so a Unix-made archive extracts 0644/0755 even under UMASK=002. Only the
+// entries 7z reports are touched; outDir also holds other jobs' files.
+func addWriteBits(dir string, entries []string, bits os.FileMode) {
+	if bits == 0 {
+		return
+	}
+
+	if len(entries) == 0 {
+		log.Printf("archive chmod dir=%s: no extracted entries in 7z output; check the -bb1 format", dir)
+		return
+	}
+
+	for _, entry := range entries {
+		rel := filepath.Clean(entry)
+		if rel == "." || !filepath.IsLocal(rel) {
+			continue
+		}
+
+		path := filepath.Join(dir, rel)
+		info, err := os.Lstat(path)
+		if err != nil {
+			log.Printf("archive chmod path=%s error: %v", path, err)
+			continue
+		}
+
+		// os.Chmod follows symlinks, which may point outside dir.
+		if info.Mode()&fs.ModeSymlink != 0 {
+			continue
+		}
+
+		mode := info.Mode().Perm()
+		if mode&bits == bits {
+			continue
+		}
+
+		// Perm() drops setgid/setuid/sticky and os.Chmod would clear them.
+		special := info.Mode() & (os.ModeSetgid | os.ModeSetuid | os.ModeSticky)
+		err = os.Chmod(path, mode|bits|special)
+		if err != nil && !errors.Is(err, fs.ErrPermission) {
+			log.Printf("archive chmod path=%s error: %v", path, err)
+		}
+	}
 }
 
 func isArchiveFile(path string) bool {
@@ -207,6 +311,7 @@ func archiveCommandArgs(command, archivePath, outDir, password string) []string 
 		"x",    // extract with full paths
 		"-y",   // assume yes on all prompts
 		"-aoa", // overwrite all existing files
+		"-bb1", // list extracted entries (see extractedEntryPrefix)
 		"-o" + outDir,
 	}
 	if strings.TrimSpace(password) != "" {
@@ -232,6 +337,7 @@ func archiveStreamTarCommandArgs(outDir string) []string {
 		"-aoa",
 		"-si",
 		"-ttar",
+		"-bb1",
 		"-o" + outDir,
 	}
 }
