@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { forwardOrError } from '$lib/server/dlq';
+import { forwardOrError } from '#lib/server/dlq.js';
 
 export async function GET({ fetch }: { fetch: typeof globalThis.fetch }) {
   return forwardOrError(fetch, '/api/settings');

@@ -1,6 +1,6 @@
 <script>
-  import FolderPicker from '$lib/components/FolderPicker.svelte';
-  import Modal from '$lib/components/Modal.svelte';
+  import FolderPicker from '#lib/components/FolderPicker.svelte';
+  import Modal from '#lib/components/Modal.svelte';
 
   export let watch = null;
   export let draft = {};

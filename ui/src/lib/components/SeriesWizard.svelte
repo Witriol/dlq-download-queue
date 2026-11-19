@@ -1,7 +1,7 @@
 <script>
-  import CandidateRow from '$lib/components/CandidateRow.svelte';
-  import FolderPicker from '$lib/components/FolderPicker.svelte';
-  import Modal from '$lib/components/Modal.svelte';
+  import CandidateRow from '#lib/components/CandidateRow.svelte';
+  import FolderPicker from '#lib/components/FolderPicker.svelte';
+  import Modal from '#lib/components/Modal.svelte';
 
   export let show = false;
   export let wizardStep = 0;

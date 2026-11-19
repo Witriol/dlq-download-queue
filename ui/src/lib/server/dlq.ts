@@ -1,10 +1,10 @@
-import { env } from '$env/dynamic/private';
+import { DLQ_API, DLQ_API_BASE } from '$app/env/private';
 import { json } from '@sveltejs/kit';
 
 const DEFAULT_BASE = 'http://127.0.0.1:8099';
 
 function apiBase(): string {
-  const raw = env.DLQ_API_BASE || env.DLQ_API;
+  const raw = DLQ_API_BASE || DLQ_API;
   if (raw) {
     return raw.replace(/\/+$/, '');
   }

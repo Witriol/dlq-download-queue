@@ -1,4 +1,4 @@
-import { forwardOrError } from '$lib/server/dlq';
+import { forwardOrError } from '#lib/server/dlq.js';
 
 type Params = { params: { id: string; episodeId: string } };
 

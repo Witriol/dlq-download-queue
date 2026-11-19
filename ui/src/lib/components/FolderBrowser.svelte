@@ -1,7 +1,7 @@
 <script>
-  import { browse, mkdir } from '$lib/api';
-  import BrowserModal from '$lib/components/BrowserModal.svelte';
-  import { errMsg } from '$lib/errors';
+  import { browse, mkdir } from '#lib/api.js';
+  import BrowserModal from '#lib/components/BrowserModal.svelte';
+  import { errMsg } from '#lib/errors.js';
 
   export let show = false;
   export let favoritePaths = [];

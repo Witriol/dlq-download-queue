@@ -1,18 +1,18 @@
 <script>
   import { onMount } from 'svelte';
-  import { addJobsBatch, clearJobs, getEvents, getMeta, getSettings, listJobs, listSeries, postAction, postGroupAction, summarizeSeriesIssues, testTelegramSettings, updateSettings } from '$lib/api';
-  import { notifyFinishedJobs } from '$lib/notifications';
-  import { displayStatus } from '$lib/status';
-  import { errMsg } from '$lib/errors';
-  import { humanBytes, humanDuration, localTimeZone } from '$lib/format';
-  import { countsFor, detectSite, parseUrls, sortJobs } from '$lib/job-utils';
-  import JobsTable from '$lib/components/JobsTable.svelte';
-  import AddJobsModal from '$lib/components/AddJobsModal.svelte';
-  import LogsModal from '$lib/components/LogsModal.svelte';
-  import ConfirmModal from '$lib/components/ConfirmModal.svelte';
-  import SettingsModal from '$lib/components/SettingsModal.svelte';
-  import FolderBrowser from '$lib/components/FolderBrowser.svelte';
-  import SeriesSection from '$lib/components/SeriesSection.svelte';
+  import { addJobsBatch, clearJobs, getEvents, getMeta, getSettings, listJobs, listSeries, postAction, postGroupAction, summarizeSeriesIssues, testTelegramSettings, updateSettings } from '#lib/api.js';
+  import { notifyFinishedJobs } from '#lib/notifications.js';
+  import { displayStatus } from '#lib/status.js';
+  import { errMsg } from '#lib/errors.js';
+  import { humanBytes, humanDuration, localTimeZone } from '#lib/format.js';
+  import { countsFor, detectSite, parseUrls, sortJobs } from '#lib/job-utils.js';
+  import JobsTable from '#lib/components/JobsTable.svelte';
+  import AddJobsModal from '#lib/components/AddJobsModal.svelte';
+  import LogsModal from '#lib/components/LogsModal.svelte';
+  import ConfirmModal from '#lib/components/ConfirmModal.svelte';
+  import SettingsModal from '#lib/components/SettingsModal.svelte';
+  import FolderBrowser from '#lib/components/FolderBrowser.svelte';
+  import SeriesSection from '#lib/components/SeriesSection.svelte';
 
   const statusOptions = ['', 'queued', 'resolving', 'downloading', 'paused', 'decrypting', 'completed', 'failed', 'decrypt_failed', 'deleted'];
   const outDirFavoritesStorageKey = 'dlq.outDirFavorites';

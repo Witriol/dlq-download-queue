@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { forwardOrError } from '$lib/server/dlq';
+import { forwardOrError } from '#lib/server/dlq.js';
 
 const allowed = new Set(['remove', 'retry-decrypt']);
 

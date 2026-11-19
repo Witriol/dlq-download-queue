@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
-  import { fileName, folderPath, formatDateTime, formatETA, formatProgress, formatSpeed, retryIn } from '$lib/format';
-  import { displayStatus, displayStatusFilter, isWebshareJob } from '$lib/status';
+  import { fileName, folderPath, formatDateTime, formatETA, formatProgress, formatSpeed, retryIn } from '#lib/format.js';
+  import { displayStatus, displayStatusFilter, isWebshareJob } from '#lib/status.js';
 
   export let jobs = [];
   export let loaded = true;

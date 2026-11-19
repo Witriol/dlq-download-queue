@@ -1,5 +1,5 @@
 <script>
-  import { humanBytes } from '$lib/format';
+  import { humanBytes } from '#lib/format.js';
 
   export let candidate;
   export let name = '';

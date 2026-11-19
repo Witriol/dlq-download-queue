@@ -1,4 +1,4 @@
-import { forwardOrError } from '$lib/server/dlq';
+import { forwardOrError } from '#lib/server/dlq.js';
 
 export async function GET({ url, fetch }: { url: URL; fetch: typeof globalThis.fetch }) {
   const params = new URLSearchParams();

@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { forwardOrError } from '$lib/server/dlq';
+import { forwardOrError } from '#lib/server/dlq.js';
 
 export async function POST({ fetch, request }: { fetch: typeof globalThis.fetch; request: Request }) {
   let body: string;

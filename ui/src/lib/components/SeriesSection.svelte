@@ -1,14 +1,14 @@
 <script>
   import { onMount, tick } from 'svelte';
-  import { errMsg } from '$lib/errors';
-  import { formatAirTime, formatDateTime, formatDateTimeShort, localTimeZone, relativeTime } from '$lib/format';
-  import { createSeries, getSeriesEvents, getSeriesIssues, getSeriesRefresh, listSeries, listSeriesAttention, postAction, previewSeries, refreshSeries, searchTVMaze, selectSeriesCandidate, seriesAction, summarizeSeriesIssues, updateSeries } from '$lib/api';
-  import FolderBrowser from '$lib/components/FolderBrowser.svelte';
-  import LogsModal from '$lib/components/LogsModal.svelte';
-  import SeriesAttentionModal from '$lib/components/SeriesAttentionModal.svelte';
-  import SeriesIssuesModal from '$lib/components/SeriesIssuesModal.svelte';
-  import SeriesEditModal from '$lib/components/SeriesEditModal.svelte';
-  import SeriesWizard from '$lib/components/SeriesWizard.svelte';
+  import { errMsg } from '#lib/errors.js';
+  import { formatAirTime, formatDateTime, formatDateTimeShort, localTimeZone, relativeTime } from '#lib/format.js';
+  import { createSeries, getSeriesEvents, getSeriesIssues, getSeriesRefresh, listSeries, listSeriesAttention, postAction, previewSeries, refreshSeries, searchTVMaze, selectSeriesCandidate, seriesAction, summarizeSeriesIssues, updateSeries } from '#lib/api.js';
+  import FolderBrowser from '#lib/components/FolderBrowser.svelte';
+  import LogsModal from '#lib/components/LogsModal.svelte';
+  import SeriesAttentionModal from '#lib/components/SeriesAttentionModal.svelte';
+  import SeriesIssuesModal from '#lib/components/SeriesIssuesModal.svelte';
+  import SeriesEditModal from '#lib/components/SeriesEditModal.svelte';
+  import SeriesWizard from '#lib/components/SeriesWizard.svelte';
 
   export let outDirPresets = [];
   export let outDirFavorites = [];

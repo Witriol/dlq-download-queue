@@ -1,6 +1,6 @@
 <script>
-  import Modal from '$lib/components/Modal.svelte';
-  import { notificationsEnabled, notificationsUnavailableReason, setNotificationsEnabled } from '$lib/notifications';
+  import Modal from '#lib/components/Modal.svelte';
+  import { notificationsEnabled, notificationsUnavailableReason, setNotificationsEnabled } from '#lib/notifications.js';
 
   export let show = false;
   export let settingsConcurrency = 2;

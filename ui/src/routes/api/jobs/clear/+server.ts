@@ -1,4 +1,4 @@
-import { forwardOrError } from '$lib/server/dlq';
+import { forwardOrError } from '#lib/server/dlq.js';
 
 export async function POST({ fetch }: { fetch: typeof globalThis.fetch }) {
   return forwardOrError(fetch, '/jobs/clear', {

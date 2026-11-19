@@ -1,6 +1,6 @@
 <script>
   import { tick } from 'svelte';
-  import Modal from '$lib/components/Modal.svelte';
+  import Modal from '#lib/components/Modal.svelte';
 
   export let show = false;
   export let watches = [];

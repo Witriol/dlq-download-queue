@@ -1,8 +1,8 @@
 <script>
   import { onDestroy } from 'svelte';
   import Modal from './Modal.svelte';
-  import { errMsg } from '$lib/errors';
-  import { formatDateTime } from '$lib/format';
+  import { errMsg } from '#lib/errors.js';
+  import { formatDateTime } from '#lib/format.js';
 
   export let show = false;
   export let title = 'Job events';

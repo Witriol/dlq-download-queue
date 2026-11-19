@@ -1,4 +1,4 @@
-import { forwardOrError } from '$lib/server/dlq';
+import { forwardOrError } from '#lib/server/dlq.js';
 
 export async function POST({ request, fetch }: { request: Request; fetch: typeof globalThis.fetch }) {
   const body = await request.text();
